@@ -2,6 +2,8 @@
 
 此目录用于同一个 FastAPI 后端项目中的业务、Agent 和后台作业。当前尚未创建可运行应用或安装依赖。
 
+实现依据：[后端与 Agent 设计](../docs/architecture/backend.md)、[接口契约](../docs/architecture/api-contract.md)与[数据库设计](../docs/architecture/database.md)。
+
 ## 计划模块
 
 - api：身份、内容、知识库、对话、任务和设置接口。

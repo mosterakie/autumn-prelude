@@ -1,6 +1,8 @@
 # 前端
 
-此目录用于秋序的独立前端应用，当前尚未初始化框架或安装依赖。Next.js 与 TypeScript 是现阶段建议。
+此目录用于秋序的独立前端应用，当前尚未初始化框架或安装依赖。设计基线采用 Next.js App Router、TypeScript 和 Tailwind CSS。
+
+实现依据：[前端设计](../docs/architecture/frontend.md)与[接口契约](../docs/architecture/api-contract.md)。
 
 ## 页面与交互
 

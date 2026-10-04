@@ -2,7 +2,7 @@
 
 个人网站与 AI 助手。对外提供个人手记、收藏、留言和普通用户 AI 问答；对内通过助手管理私人知识库、内容和公开范围。
 
-当前为初始仓库：包含产品方案、设计参考和前后端目录说明，应用功能尚未实现。部署暂缓。
+当前已完成产品方案、前后端设计、接口契约与数据库设计，保留三张视觉参考图。应用功能与数据库迁移尚未实现，部署暂缓。
 
 ## 已确定的方向
 
@@ -23,6 +23,7 @@
 frontend/       前端目录与职责说明
 backend/        FastAPI 与 Agent 的统一后端目录
 docs/           产品方案与已确认决定
+docs/architecture/ 前后端、接口与数据库设计
 docs/design/    原有视觉概念稿及说明
 ```
 
@@ -30,6 +31,11 @@ docs/design/    原有视觉概念稿及说明
 
 - [完整产品方案](docs/product-plan.md)
 - [已确认决定与待定项](docs/decisions.md)
+- [技术设计总览](docs/architecture/README.md)
+- [前端设计](docs/architecture/frontend.md)
+- [后端与 Agent 设计](docs/architecture/backend.md)
+- [接口契约](docs/architecture/api-contract.md)
+- [数据库设计](docs/architecture/database.md)
 - [设计概念稿](docs/design/README.md)
 - [前端范围](frontend/README.md)
 - [后端与 Agent 范围](backend/README.md)
