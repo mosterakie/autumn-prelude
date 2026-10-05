@@ -22,3 +22,8 @@ def nonnegative_integer(value: int, name: str) -> None:
 def uuid_value(value: UUID, name: str) -> None:
     if not isinstance(value, UUID):
         raise ValueError(f"{name} must be a UUID")
+
+
+def boolean_value(value: bool, name: str) -> None:
+    if type(value) is not bool:
+        raise ValueError(f"{name} must be a bool")
