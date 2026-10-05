@@ -7,7 +7,13 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autumn_backend.db.base import Base
-from autumn_backend.errors import InvalidInputError, NotFoundError, OptimisticLockError
+from autumn_backend.errors import (
+    ConflictError,
+    InvalidInputError,
+    NotFoundError,
+    OptimisticLockError,
+)
+from autumn_backend.repositories.constraints import database_errors
 
 
 class RepositoryBase:
@@ -74,7 +80,8 @@ class VersionedRepository[T: Base](UUIDRepository[T]):
             .returning(self.model)
             .execution_options(populate_existing=True)
         )
-        record = (await self.session.execute(statement)).scalar_one_or_none()
+        with database_errors():
+            record = (await self.session.execute(statement)).scalar_one_or_none()
         if record is None:
             raise OptimisticLockError("对象已变化或不存在，请重新读取")
         return record
@@ -86,3 +93,24 @@ class AppendOnlyRepository(RepositoryBase):
 
 class ControlledMutableRepository[T: Base](UUIDRepository[T]):
     """状态机表的读能力；状态变更必须由具体 Repository 的命名方法提供。"""
+
+    transition_fields: frozenset[str] = frozenset()
+
+    async def _transition(
+        self, object_id: UUID, expected_status: str, status: str, changes: dict[str, object]
+    ) -> T:
+        if not changes.keys() <= self.transition_fields:
+            raise InvalidInputError("不允许的状态更新字段")
+        table = self.model.__table__
+        statement = (
+            update(self.model)
+            .where(table.c.id == object_id, table.c.status == expected_status)
+            .values(**changes, status=status, version=table.c.version + 1)
+            .returning(self.model)
+            .execution_options(populate_existing=True)
+        )
+        with database_errors():
+            record = (await self.session.execute(statement)).scalar_one_or_none()
+        if record is None:
+            raise ConflictError("对象状态已变化或不存在")
+        return record

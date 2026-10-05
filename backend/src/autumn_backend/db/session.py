@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import (
 from autumn_backend.config import Settings, get_settings
 from autumn_backend.observability.logging import get_logger
 from autumn_backend.repositories.bundle import Repositories
+from autumn_backend.repositories.constraints import database_errors
 
 logger = get_logger(__name__)
 
@@ -142,7 +143,8 @@ class UnitOfWork:
         self._assert_owner()
         if self._session is None or self._finished:
             return
-        await self._session.commit()
+        with database_errors():
+            await self._session.commit()
         self._finished = True
 
     async def rollback(self) -> None:

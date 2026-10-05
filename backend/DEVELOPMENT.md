@@ -7,6 +7,7 @@
 | --- | --- | --- |
 | B1 UnitOfWork | 完成 | 显式事务、共享 Repository 会话、提交/回滚/释放、单次进入、Task 所有权；真实 PostgreSQL 验证 |
 | B2 Repository 能力基类 | 完成 | UUID 读取/行锁、字段白名单 CAS；追加表与状态机表不继承通用写接口 |
+| B3 错误与状态 CAS | 完成 | SQLSTATE/约束名映射领域错误、状态 WHERE 仲裁、UoW 提交错误回滚；失败事务只可回滚或使用显式 SAVEPOINT 恢复 |
 
 Repository 只执行事务内的数据库操作，不自行提交。不在数据库事务内执行外部模型、搜索、邮件或对象存储 I/O。
 UoW 工厂可并发共享，实例不可共享或复用。显式 commit/rollback 后应退出当前上下文并创建新 UoW。

@@ -50,12 +50,12 @@ async def test_success_commits_and_exception_rolls_back(uows: UnitOfWorkFactory)
 async def test_commit_failure_rolls_back_and_factory_can_start_again(
     uows: UnitOfWorkFactory,
 ) -> None:
-    from sqlalchemy.exc import IntegrityError
+    from autumn_backend.errors import ConflictError
 
     async with uows() as uow:
         uow.session.add(User(email_normalized="unique@example.com", password_hash="x"))
     broken = uows()
-    with pytest.raises(IntegrityError):
+    with pytest.raises(ConflictError):
         async with broken:
             broken.session.add(User(email_normalized="unique@example.com", password_hash="x"))
     assert broken.finished
