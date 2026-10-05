@@ -230,6 +230,18 @@ async def main() -> int:
         other_bucket = await conn.fetchval(insert_bucket.format(span="interval '2 days'"), other)
         conversation = await conn.fetchval(_INSERT_CONVERSATION, user)
         run = await conn.fetchval(_INSERT_RUN, user, conversation, f"key-{uuid.uuid4()}")
+        await _rejected(
+            conn,
+            "运行代际不能小于 1",
+            "UPDATE runs SET execution_generation = 0 WHERE id = $1",
+            run,
+        )
+        await _accepted(
+            conn,
+            "运行代际可递增",
+            "UPDATE runs SET execution_generation = execution_generation + 1 WHERE id = $1",
+            run,
+        )
         await _rejected(conn, "用别人的桶做预留", _INSERT_RESERVATION, run, other_bucket, user)
         await _accepted(conn, "用自己的桶做预留", _INSERT_RESERVATION, run, bucket, user)
 

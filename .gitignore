@@ -38,6 +38,7 @@ coverage/
 *.db
 /backups/
 /work/
+/backend/var/
 
 # Local editors and OS
 .vscode/

@@ -246,7 +246,10 @@ async def test_accept_and_replay_do_not_allocate_again(case: Case) -> None:
         job = (
             await uow.session.execute(select(Job).where(Job.run_id == result.run_id))
         ).scalar_one()
-        assert job.kind == "run.dispatch" and job.payload == {"run_id": str(result.run_id)}
+        assert job.kind == "run.dispatch" and job.payload == {
+            "run_id": str(result.run_id),
+            "execution_generation": 1,
+        }
         rate = (await uow.session.execute(select(RateLimitBucket))).scalar_one()
         assert rate.hits == 1 and str(case.actor.user_id) not in rate.scope_hash
         events = await uow.repositories.run_events.after(result.run_id, 0)

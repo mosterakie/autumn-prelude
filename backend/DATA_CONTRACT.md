@@ -26,6 +26,10 @@ B8 新增 `b8a71e06d204`：`comments.request_hash` 保存原始请求身份。
 迁移对已有留言回填，INSERT 触发器兼容原生 SQL；修改正文不会覆盖原摘要。
 摘要采用 UTF-8、稳定 JSON、SHA-256，仅规范化 CRLF/CR，不折叠空白或字符。
 
+E8 新增 `d31e82a9f647`：runs.execution_generation 与 run_sources.context_generation，
+均为 bigint / NOT NULL / 默认 1 / CHECK >=1。它们独立于内容 version、消息 content_version、
+ACL 与 schema_version；任务载荷持久绑定代际，来源按当前代际装配、旧代际记录保留。
+
 ---
 
 ## 2 v1 支撑功能的存储归属
@@ -48,7 +52,8 @@ B8 新增 `b8a71e06d204`：`comments.request_hash` 保存原始请求身份。
 | 消息正文 | `messages` | 已建 | A6 | 完整正文；`content_version` 是**累计正文版本**，供 SSE 快照替换 |
 | 运行 | `runs` | 已建 | A6 | 幂等键唯一；同会话非终态唯一；`checkpoint_thread_id` 服务端生成 |
 | 流式事件 | `run_events` | 已建 | A6 | 只追加；序号由 `runs.next_event_seq` 原子分配 |
-| 等待补充信息 | `runs.input_request`（JSONB） | 已有 JSON 结构 | A6/E2 | 由版本化 schema 校验；等待项含 expires_at / answer_hash |
+| 等待补充信息 | `runs.input_request`（JSONB） | 已有 JSON 结构 | A6/E7 | 由版本化 schema 校验；等待项含 expires_at / answer_hash |
+| 执行与来源代际 | `runs.execution_generation` / `run_sources.context_generation` | 已建 | E8 | 等待/恢复推进代际；模型结果联合校验代际、lease、权限；旧来源保留，重建不能复用旧闭包 |
 | 需确认的动作 | `actions` | 已建 | A6 | 幂等键不可空；**双版本** `expected_version` + `expected_acl_version` |
 | 授权来源 | `actions.authorization_kind`（枚举） | 已建 | A6 | explicit_request / confirmed_preview |
 | 每日额度 | `quota_buckets` / `quota_reservations` | 已建 | A6 | 桶**不存静态限额**，限额从当前配置读取 |

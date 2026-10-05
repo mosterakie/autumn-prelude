@@ -12,12 +12,14 @@ from autumn_backend.io_boundary import require_outside_uow
 
 class LocalObjectStore:
     def __init__(self, root: Path) -> None:
+        require_outside_uow()
         self.root = root.resolve()
 
-    def _path(self, key: str, *, staging: bool = False) -> Path:
+    def _path(self, key: str, *, staging: bool = False, deleted: bool = False) -> Path:
         if not re.fullmatch(r"objects/[0-9a-f]{32}\.(pdf|docx)", key):
             raise InvalidInputError("对象标识无效")
-        value = self.root / (key.replace("objects/", "staging/", 1) if staging else key)
+        area = "deleted" if deleted else "staging" if staging else "objects"
+        value = self.root / key.replace("objects/", f"{area}/", 1)
         if not value.resolve().is_relative_to(self.root):
             raise InvalidInputError("对象路径越界")
         return value
@@ -27,12 +29,17 @@ class LocalObjectStore:
         await asyncio.to_thread(self._stage, key, data)
 
     def _stage(self, key: str, data: bytes) -> None:
+        if self._path(key, deleted=True).exists():
+            raise ConflictError("对象已删除，不能复用原标识")
         target = self._path(key, staging=True)
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
             if target.read_bytes() != data:
                 raise ConflictError("暂存对象已有不同内容")
             os.utime(target, None)
+            if self._path(key, deleted=True).exists():
+                target.unlink(missing_ok=True)
+                raise ConflictError("对象已进入删除流程")
             return
         try:
             with target.open("xb") as stream:
@@ -42,12 +49,17 @@ class LocalObjectStore:
         except FileExistsError:
             if target.read_bytes() != data:
                 raise ConflictError("暂存对象已有不同内容") from None
+        if self._path(key, deleted=True).exists():
+            target.unlink(missing_ok=True)
+            raise ConflictError("对象已进入删除流程")
 
     async def promote(self, key: str, digest: str, size: int) -> None:
         require_outside_uow()
         await asyncio.to_thread(self._promote, key, digest, size)
 
     def _promote(self, key: str, digest: str, size: int) -> None:
+        if self._path(key, deleted=True).exists():
+            raise ConflictError("对象已删除，不能转正")
         source, target = self._path(key, staging=True), self._path(key)
         candidate = target if target.exists() else source
         data = candidate.read_bytes()
@@ -58,6 +70,9 @@ class LocalObjectStore:
             os.replace(source, target)
         elif source.exists():
             source.unlink()
+        if self._path(key, deleted=True).exists():
+            target.unlink(missing_ok=True)
+            raise ConflictError("对象已进入删除流程")
 
     async def read(self, key: str) -> bytes:
         require_outside_uow()
@@ -68,8 +83,12 @@ class LocalObjectStore:
         await asyncio.to_thread(self._delete, key)
 
     def _delete(self, key: str) -> None:
-        self._path(key).unlink(missing_ok=True)
+        # 永久小墓碑阻止跨进程的迟到上传/转正重建已删除对象；key 永不复用。
+        marker = self._path(key, deleted=True)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch(exist_ok=True)
         self._path(key, staging=True).unlink(missing_ok=True)
+        self._path(key).unlink(missing_ok=True)
 
     async def orphan_candidates(self, before_timestamp: float) -> tuple[str, ...]:
         require_outside_uow()

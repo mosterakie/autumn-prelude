@@ -251,7 +251,10 @@ class RunService:
                 JobSpec(
                     kind="run.dispatch",
                     idempotency_key=f"run.dispatch:{run.id}",
-                    payload={"run_id": str(run.id)},
+                    payload={
+                        "run_id": str(run.id),
+                        "execution_generation": run.execution_generation,
+                    },
                     actor_id=actor.user_id,
                     run_id=run.id,
                     auth_session_id=auth.session_id,

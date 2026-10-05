@@ -8,7 +8,7 @@ from sqlalchemy import select
 from autumn_backend.db.enums import RunSourceType
 from autumn_backend.db.models import ResourceVersion, Run, RunSource
 from autumn_backend.db.session import UnitOfWork
-from autumn_backend.errors import NotFoundError
+from autumn_backend.errors import NotFoundError, OptimisticLockError
 from autumn_backend.policies import ActorContext
 from autumn_backend.policies.facts import (
     ContextFacts,
@@ -84,7 +84,9 @@ async def run_facts(
     operation: Operation,
     *,
     expected_version: int | None = None,
+    expected_generation: int | None = None,
     require_context: bool = True,
+    extra_resource_ids: tuple[UUID, ...] = (),
 ) -> tuple[ActorContext, PolicyFacts, Run]:
     auth = await lock_authentication(uow, actor)
     probe = await uow.repositories.runs.get(run_id)
@@ -94,11 +96,20 @@ async def run_facts(
         probe.conversation_id, probe.user_id
     )
     run = await uow.repositories.runs.get_for_update_or_raise(run_id)
+    if expected_version is not None and run.version != expected_version:
+        raise OptimisticLockError("旧执行的运行版本已失效")
     if conversation is None:
         raise NotFoundError("会话不存在")
-    sources = await uow.repositories.knowledge.sources(run_id)
+    sources = (
+        await uow.repositories.knowledge.sources(
+            run_id, context_generation=run.execution_generation
+        )
+        if require_context
+        else ()
+    )
     for resource_id in sorted(
         {source.resource_id for source in sources if source.resource_id is not None}
+        | set(extra_resource_ids)
     ):
         await uow.repositories.resources.get_for_update(resource_id)
     dependencies = tuple([await source_fact(uow, source, run.user_id) for source in sources])
@@ -109,13 +120,16 @@ async def run_facts(
         isinstance(manifest, dict)
         and manifest.get("schema_version") == 1
         and manifest.get("complete") is True
+        and manifest.get("context_generation") == run.execution_generation
     )
     context = ContextFacts(
         run_id=run.id,
         mode=ConversationMode(conversation.mode.value),
         captured_scope_epoch=run.scope_epoch,
-        captured_generation=run.version if expected_version is None else expected_version,
-        current_generation=run.version,
+        captured_generation=run.execution_generation
+        if expected_generation is None
+        else expected_generation,
+        current_generation=run.execution_generation,
         sources=dependencies,
         sources_complete=complete,
     )
@@ -136,3 +150,58 @@ async def run_facts(
     )
     require_allowed(current_actor, facts)
     return current_actor, facts, run
+
+
+async def advance_context_generation(uow: UnitOfWork, run: Run, *, preserve_sources: bool) -> None:
+    """调用方持有 Run 锁；等待/恢复复制已验证闭包，失效重建保留旧记录但不复用。"""
+    sources = (
+        await uow.repositories.knowledge.sources(
+            run.id, context_generation=run.execution_generation
+        )
+        if preserve_sources
+        else ()
+    )
+    run.execution_generation += 1
+    for source in sources:
+        values = {
+            name: getattr(source, name)
+            for name in (
+                "source_type",
+                "resource_id",
+                "revision_id",
+                "publication_id",
+                "index_id",
+                "chunk_id",
+                "observed_acl_version",
+                "locator",
+                "web_url",
+                "web_title",
+                "fetched_at",
+                "excerpt",
+            )
+        }
+        key = (
+            source.source_key.split(":", 1)[1]
+            if source.source_key.startswith(f"g{source.context_generation}:")
+            else source.source_key
+        )
+        await uow.repositories.knowledge.record_values(
+            run.id, key, values, context_generation=run.execution_generation
+        )
+    if not preserve_sources:
+        run.config_snapshot = {
+            **run.config_snapshot,
+            "context_manifest": {
+                "schema_version": 1,
+                "complete": False,
+                "context_generation": run.execution_generation,
+            },
+        }
+    else:
+        run.config_snapshot = {
+            **run.config_snapshot,
+            "context_manifest": {
+                **run.config_snapshot.get("context_manifest", {}),
+                "context_generation": run.execution_generation,
+            },
+        }

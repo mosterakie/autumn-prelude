@@ -12,7 +12,7 @@ from autumn_backend.services.actions import ActionService, ResourcePreview, Sett
 from autumn_backend.services.input_waits import InputWaitService, load_input
 from autumn_backend.services.quota import QuotaService
 from tests.integration.service_cases import ServiceCase
-from tests.integration.test_knowledge_service import service_for
+from tests.integration.test_knowledge_service import build, service_for
 
 pytestmark = pytest.mark.integration
 
@@ -147,7 +147,10 @@ async def test_stale_preview_and_persisted_expiry(e_case: ServiceCase) -> None:
 
 
 async def test_input_consumption_is_once_and_does_not_recharge(e_case: ServiceCase) -> None:
+    knowledge = service_for(e_case)
+    await build(e_case, knowledge, e_case.publication_id)
     run_id, _ = await prepared_run(e_case)
+    await knowledge.retrieve(e_case.member, run_id, "正文")
     service = InputWaitService(e_case.uows)
     wait = await service.request(
         e_case.member, run_id, wait_id=uuid4(), prompt="请选择", options=("A", "B")
@@ -170,6 +173,16 @@ async def test_input_consumption_is_once_and_does_not_recharge(e_case: ServiceCa
     after = await QuotaService(e_case.uows).current(e_case.member)
     assert (after.used, after.reserved) == (before.used, before.reserved)
     async with e_case.uows() as uow:
+        run = await uow.repositories.runs.get_or_raise(run_id)
+        assert run.execution_generation == 3
+        assert (
+            len(
+                await uow.repositories.knowledge.sources(
+                    run_id, context_generation=run.execution_generation
+                )
+            )
+            == 2
+        )
         assert (
             await uow.session.scalar(
                 select(func.count())

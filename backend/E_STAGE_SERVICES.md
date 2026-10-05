@@ -38,6 +38,7 @@ delete 先记录 pending_delete 并阻断读取；关联资源必须提供双版
 cleanup_orphans 接受明确时区时钟，仅移除超过 24 小时且没有数据库登记的 staging；
 已登记文件由任务流程收敛，不按年龄删除。LocalObjectStore 限制规范对象 key、解析后路径
 必须位于 storage_root 内；通过 ContextVar 阻止在活跃 UoW 内调用对象存储。
+E8 复核补充永久小删除标记，并先删 staging 再删正式文件；迟到的上传/转正不能复用已删除 key。
 基础验收 3 项：上传/转正/重试/权限、删除失败重试与立即阻断、孤儿回收保留登记对象。
 
 ## E6 知识库与来源
@@ -69,7 +70,8 @@ capture_dependencies 返回实际选入的历史消息、摘要、记忆文本�
 摘要追踪截至 upto_message_seq 的关联 runs，记忆追踪 origin_run / origin_message；缺失来源
 manifest 或失效权限拒绝继续。服务生成 schema_version=1 的完整 manifest，不接收客户端的
 “完整”声明。G 必须仅使用这些入口返回的文本，并在每次派发前再次验证完整闭包；E 的端口
-不是完整 LangGraph 上下文运行器。当前用 Run.version 做乐观执行检查，正式代际 fencing 在 E8 接入。
+不是完整 LangGraph 上下文运行器。Run.version 用作乐观版本检查，E8 的 execution_generation
+独立用于执行 fencing；run_sources.context_generation 区分当前闭包与历史依赖。
 
 基础验收 4 项：私人/公开隔离与撤回引用、DOCX/网页版本与无 OCR、嵌入期间撤回丢弃结果、
 历史来源闭包复制后重新失效；外部端口测试同时断言 active_uows=0。
@@ -102,3 +104,51 @@ waiting_input。answer 锁当前账号/会话/Run，重新鉴权及验证完整�
 
 基础验收 4 项：预览/确认/幂等/归属及无资源目标、旧 ACL 与持久过期、答案去重/不重新收费、
 入队后的故障回滚消费标记/消息/任务。服务只执行数据库操作，没有外部 I/O。
+
+## E8 外部 I/O 与结果提交
+
+UnitOfWork 在进入/退出时维护任务局部 active_uows。LocalObjectStore 和网页读取器
+在 I/O 入口检查；KnowledgeService 的提取/嵌入/rerank、ExecutionService 的模型端口
+在调用前检查。子任务继承事务标记，也不能借新 Task 绕过边界。E1/E2/E3/E4/E7
+只有数据库操作；邮件发送尚未实现，F/I 接入邮件端口时必须使用相同边界约束。
+
+新增持久 runs.execution_generation、run_sources.context_generation（默认 1，均 >=1）。
+派发/恢复 Job 载荷绑定运行代际，manifest 绑定当前代际。等待/恢复在 Run 锁内推进代际
+并复制已验证来源；权限修改后的重建推进代际并标记 manifest 不完整，不删除旧来源。
+历史、摘要和记忆目前保守复核来源 Run 的全部代际依赖；有失效依赖时拒绝使用，G 负责
+选择可用历史/重建摘要，不能为了继续而忽略依赖。切换代际本身不能宣称旧文本已获新授权。
+
+ExecutionService.start_model_call 在同一短 UoW 内检查当前认证/本人会话/完整来源、
+Job token/到期时间、任务及 Run 的代际、授权会话、ProviderCall 归属与 prepared 状态；
+Run running、账本 dispatched 与首次额度扣次一起提交，再把不可变 ExecutionFence 带出事务。
+已派发或 unknown 调用拒绝重复网络请求。call_model 在 UoW 外调用 ModelCall；
+commit_model_result 再开 UoW，联合验证 lease、代际、Run version、当前身份及完整来源，
+然后正式 assistant 消息、ProviderCall succeeded、Run succeeded、元数据事件及 Job.finish
+同事务保存，并在最终 Job.finish 前复核实际时间。失效或晚期故障回滚全部正式结果。
+没有将正文复制进事件/Job，也没有在失权时保存模型输出。外部调用后失权并不等于零费用；
+账本保留派发证据，H 负责 unknown 对账/故障分类/退款，不能自动重发。
+
+commit_action_result 只接受 H 的可信数据库 handler，不能作为 HTTP 或模型可调用接口。
+联合复核 confirmed_preview 的参数摘要、双版本、状态、有效期、当前权限、任务 lease，
+有关联 Run 时同时检查代际及旧输入闭包。handler 的业务写入、Action succeeded、审计与
+Job.finish 在同一事务。结果仅允许对象 ID/版本/状态元数据；handler 必须执行已验证 command。
+handler 可能有意修改 ACL/删除资源，因此末端检查当前身份/会话/归属/代际，随后使关联
+Run 的上下文不完整、推进代际、排队 run.resume(rebuild_context=True)，不能续用旧输入。
+发布、设置、记忆、删除等实际 handler 注册与执行循环仍由 H 接入。
+
+正式结果写入的统一锁顺序：user/auth_session → conversation → run → 排序后的 resource 集合
+→ job → provider_call/额度；动作在进入目标锁之前一起锁定其来源资源。Service 不持数据库
+锁跨越模型/嵌入/网络/文件调用。I 的实际供应商适配必须遵守端口的 I/O 契约。
+
+基础验收 5 项：模型端口在事务外及成功原子提交、旧 lease/代际丢弃、模型期间撤回来源、
+动作业务写入后租约失效整体回滚及成功提交、对象 I/O 闸门覆盖子任务。
+
+## 本阶段完成边界
+
+2026-10-06 集中基础验收 31 通过、0 跳过（29 个服务流程 + 2 个 CHECK Catalog 核对）。
+Ruff、格式、78 文件 mypy strict、git diff --check、增量迁移回退/升级与 Alembic check 通过。
+测试库独立使用 5442；业务库未修改。各节点本地提交，没有推送或部署。
+
+下一步 F 接入邮箱/密码认证、站长升级验证、资源/动作/Run API 与 SSE；G/H/I
+接入 LangGraph、Worker 调度/heartbeat/业务 handler 和 DeepSeek/Tavily/百炼/邮件。
+E 的完成范围是应用服务和事务边界，当前网站尚未完成真实登录与模型端到端联通。

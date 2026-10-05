@@ -183,6 +183,7 @@ class StorageService:
         async with self._uows() as uow:
             record = await self._job_file(uow, actor, job_id, token, "storage.finalize")
             record = await uow.repositories.files.ready(record.id)
+            await self._authorize(uow, actor)
             await uow.repositories.jobs.finish(job_id, token, result={"file_id": str(record.id)})
             return file_dto(record)
 
@@ -231,6 +232,7 @@ class StorageService:
         async with self._uows() as uow:
             record = await self._job_file(uow, actor, job_id, token, "storage.delete")
             record = await uow.repositories.files.deleted(record.id)
+            await self._authorize(uow, actor)
             await uow.repositories.jobs.finish(job_id, token, result={"file_id": str(record.id)})
             return file_dto(record)
 

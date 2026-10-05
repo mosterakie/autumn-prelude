@@ -158,6 +158,10 @@ class Run(UUIDPrimaryKey, Timestamped, Versioned, Base):
     checkpoint_thread_id: Mapped[str] = mapped_column(Text, nullable=False)
     # 持久事件的下一个序号；初值 1，首次分配得到 1。
     next_event_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
+    # E8 执行 fencing：等待/恢复/重建上下文时递增，独立于内容 CAS 与事件序号。
+    execution_generation: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=1, server_default=text("1")
+    )
 
     # 已校验的模型与预算版本，**不含密钥**。
     config_snapshot: Mapped[dict[str, Any]] = mapped_column(
@@ -176,6 +180,7 @@ class Run(UUIDPrimaryKey, Timestamped, Versioned, Base):
         UniqueConstraint("id", "conversation_id", name="uq_runs_id_conversation_id"),
         # 供 quota_reservations 的"同一用户"复合引用。
         UniqueConstraint("id", "user_id", name="uq_runs_id_user_id"),
+        CheckConstraint("execution_generation >= 1", name="execution_generation_positive"),
         # 同一 conversation 只允许一个非终态 run；谓词由枚举派生。
         Index(
             "uq_runs_conversation_id_non_terminal",

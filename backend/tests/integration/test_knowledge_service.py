@@ -16,6 +16,7 @@ from autumn_backend.errors import (
 from autumn_backend.io_boundary import active_uows
 from autumn_backend.knowledge.text import extract
 from autumn_backend.knowledge.web import WebPage, validate_url
+from autumn_backend.services.access import AuthorizationError
 from autumn_backend.services.knowledge import KnowledgeService
 from autumn_backend.services.storage import DOCX, PDF, StorageService
 from tests.integration.service_cases import ServiceCase
@@ -70,6 +71,15 @@ async def test_private_public_indexes_and_current_citation(e_case: ServiceCase) 
     citation = await service.citation(e_case.member, public.id, public_hits[0].id)
     assert citation == public_hits[0]
     async with e_case.uows() as uow:
+        fetched_at = await uow.repositories.users.database_time()
+    page = WebPage("https://example.com/source", "联网标题", "联网摘要")
+    with pytest.raises(AuthorizationError):
+        await service.record_web_sources(e_case.member, public.id, (page,), fetched_at=fetched_at)
+    web_sources = await service.record_web_sources(
+        e_case.owner, private.id, (page,), fetched_at=fetched_at
+    )
+    assert (await service.citation(e_case.owner, private.id, web_sources[0].id)).text == "联网摘要"
+    async with e_case.uows() as uow:
         await uow.repositories.publications.revoke(
             e_case.resource_id, expected_version=0, expected_acl_version=1
         )
@@ -112,12 +122,14 @@ async def test_document_web_ingest_and_no_ocr(e_case: ServiceCase) -> None:
     async with e_case.uows() as uow:
         revision = await uow.session.get(ResourceVersion, result.revision_id)
         assert revision.body_text == "知识段落" and revision.file_object_key == file.object_key
-        ingest_job = await uow.repositories.jobs.claim(kinds=("knowledge.ingest",))
-        assert ingest_job is not None and ingest_job.lease_token is not None
-    await service.build_index(e_case.owner, ingest_job.id, ingest_job.lease_token)
+    for _ in range(2):
+        async with e_case.uows() as uow:
+            ingest_job = await uow.repositories.jobs.claim(kinds=("knowledge.ingest",))
+            assert ingest_job is not None and ingest_job.lease_token is not None
+        await service.build_index(e_case.owner, ingest_job.id, ingest_job.lease_token)
     async with e_case.uows() as uow:
         owner_run = await e_case.run(uow, owner=True)
-    hits = await service.retrieve(e_case.owner, owner_run.id, "知识段落")
+    hits = await service.retrieve(e_case.owner, owner_run.id, "知识段落", limit=20)
     assert any(hit.text == "知识段落" and hit.locator["paragraph"] == 1 for hit in hits)
     writer = PdfWriter()
     writer.add_blank_page(width=100, height=100)

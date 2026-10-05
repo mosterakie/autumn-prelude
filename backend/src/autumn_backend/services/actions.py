@@ -35,7 +35,7 @@ from autumn_backend.repositories.audit import AuditMetadata
 from autumn_backend.repositories.jobs import JobSpec
 from autumn_backend.services.access import lock_authentication, publication_facts, require_allowed
 from autumn_backend.services.ai_limits import read_ai_limits
-from autumn_backend.services.context import run_facts
+from autumn_backend.services.context import advance_context_generation, run_facts
 from autumn_backend.services.quota import QuotaService
 
 
@@ -296,7 +296,15 @@ class ActionService:
             await lock_authentication(uow, actor)
             run = None
             if run_id is not None:
-                _, _, run = await run_facts(uow, actor, run_id, Operation.CONTINUE_RUN)
+                _, _, run = await run_facts(
+                    uow,
+                    actor,
+                    run_id,
+                    Operation.CONTINUE_RUN,
+                    extra_resource_ids=(command.target_id,)
+                    if isinstance(command, ResourcePreview)
+                    else (),
+                )
                 if authorization_message_id is None:
                     raise InvalidInputError("Agent 提议必须绑定用户授权消息")
             if authorization_message_id is not None:
@@ -333,6 +341,7 @@ class ActionService:
                         raise ConflictError("当前运行不能提出新的动作")
                     run.status = RunStatus.WAITING_APPROVAL
                     run.version += 1
+                    await advance_context_generation(uow, run, preserve_sources=True)
                     await uow.session.flush()
                     await uow.repositories.run_events.emit(
                         run.id, RunEventType.ACTION_PROPOSED, {"action_id": str(creation.record.id)}
@@ -350,10 +359,16 @@ class ActionService:
         probe = await uow.repositories.actions.get(action_id)
         if probe is None or probe.actor_id != actor.user_id:
             raise NotFoundError("动作不存在")
+        resource_ids = {probe.target_resource_id} if probe.target_resource_id is not None else set()
         if probe.run_id is not None:
             await run_facts(uow, actor, probe.run_id, Operation.READ_RUN, require_context=False)
-        if probe.target_resource_id is not None:
-            await uow.repositories.resources.get_for_update_or_raise(probe.target_resource_id)
+            resource_ids.update(
+                source.resource_id
+                for source in await uow.repositories.knowledge.sources(probe.run_id)
+                if source.resource_id is not None
+            )
+        for resource_id in sorted(resource_ids):
+            await uow.repositories.resources.get_for_update(resource_id)
         action = await uow.repositories.actions.get_for_update_or_raise(action_id)
         require_allowed(
             actor,
@@ -402,6 +417,7 @@ class ActionService:
             await self._target(uow, actor, stored_command(action))
             if action.status is ActionStatus.READY:
                 return action_dto(action)
+            generation = None
             if action.run_id is not None:
                 _, _, run = await run_facts(uow, actor, action.run_id, Operation.RESUME_RUN)
                 if run.status is not RunStatus.WAITING_APPROVAL:
@@ -414,6 +430,8 @@ class ActionService:
                 run.status = RunStatus.QUEUED
                 run.auth_session_id = actor.auth_session_id
                 run.version += 1
+                await advance_context_generation(uow, run, preserve_sources=True)
+                generation = run.execution_generation
                 await uow.session.flush()
                 await uow.repositories.run_events.emit(
                     run.id, RunEventType.RUN_STATUS, {"status": run.status.value}
@@ -435,6 +453,7 @@ class ActionService:
                         "schema_version": 1,
                         "action_id": str(action.id),
                         "parameters_hash": action.parameters_hash,
+                        "execution_generation": generation,
                     },
                 ),
             )
@@ -454,6 +473,7 @@ class ActionService:
             run.status = RunStatus.CANCELLED
             run.finished_at = await uow.repositories.users.database_time()
             run.version += 1
+            await advance_context_generation(uow, run, preserve_sources=False)
             await uow.session.flush()
             if not await uow.repositories.provider_calls.model_was_dispatched(run.id):
                 await QuotaService(self._uows).release_before_dispatch_in_uow(uow, run.id)

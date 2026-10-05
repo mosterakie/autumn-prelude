@@ -194,6 +194,7 @@ run_id 与 conversation_id 使用复合外键，保证同属会话。一次 run 
 | scope_epoch | bigint | 建立上下文时的全站权限版本 |
 | checkpoint_thread_id | text | 服务端生成的框架线程标识 |
 | next_event_seq | bigint | 持久事件的下一个序号 |
+| execution_generation | bigint | E8 增量迁移；>=1，等待/恢复推进，正式结果提交的执行 fencing |
 | config_snapshot | jsonb | 已校验的模型和预算版本，不含密钥 |
 | input_request | jsonb NULL | 等待补充信息的 id、prompt、options、expires_at、consumed_at、answer_hash 与 answer_message_id |
 | started_at finished_at | timestamptz NULL | 生命周期 |
@@ -213,7 +214,11 @@ message.snapshot 事件回放时从仍可读取的 messages 构造最新内容�
 
 ### run_sources
 
-id UUID PK；run_id FK runs；source_type 为 resource 或 web；resource_id、revision_id、publication_id 可空；index_id、chunk_id 可空；observed_acl_version；locator JSONB；web_url、web_title、fetched_at 可空；excerpt text NULL；source_key text。
+id UUID PK；run_id FK runs；context_generation bigint（E8，>=1，默认 1）；source_type 为 resource 或 web；resource_id、revision_id、publication_id 可空；index_id、chunk_id 可空；observed_acl_version；locator JSONB；web_url、web_title、fetched_at 可空；excerpt text NULL；source_key text。
+
+当前模型输入闭包仅装配当前 execution_generation 的来源，source_key 包含代际前缀以保留重复读取的原始身份。
+等待/恢复在同一事务复制已验证来源到新代际；权限修改后的重建标记 manifest 不完整，重新选择获准文本。
+旧代际来源仍然保存，用于历史消息、摘要、记忆追溯；不能因为切换代际而删除依赖证据。
 
 resource 类型必须有资源和版本的复合外键；public 模式还必须指向当时的 publication。web 类型禁止填入无意义资源外键，只有站长运行可创建。索引 UNIQUE(run_id, source_key)。
 

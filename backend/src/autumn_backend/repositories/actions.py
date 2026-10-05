@@ -238,3 +238,30 @@ class ActionRepository(ControlledMutableRepository[Action]):
         if action is None:
             raise ConflictError("操作已过期或状态已变化")
         return action
+
+    async def succeed_confirmed(self, action_id: UUID, result: dict[str, Any]) -> Action:
+        with database_errors():
+            action = (
+                await self.session.execute(
+                    update(Action)
+                    .where(
+                        Action.id == action_id,
+                        Action.status == ActionStatus.READY,
+                        Action.authorization_kind == ActionAuthorizationKind.CONFIRMED_PREVIEW,
+                        Action.requires_confirmation.is_(True),
+                        Action.confirmed_at.is_not(None),
+                        Action.expires_at > func.clock_timestamp(),
+                    )
+                    .values(
+                        status=ActionStatus.SUCCEEDED,
+                        executed_at=func.clock_timestamp(),
+                        result=result,
+                        version=Action.version + 1,
+                    )
+                    .returning(Action)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one_or_none()
+        if action is None:
+            raise ConflictError("确认动作已过期或状态已变化")
+        return action

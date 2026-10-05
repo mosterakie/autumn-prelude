@@ -222,6 +222,9 @@ class RunSource(UUIDPrimaryKey, CreatedAt, Base):
     source_type: Mapped[RunSourceType] = mapped_column(
         enum_column_type(RunSourceType, length=16), nullable=False
     )
+    context_generation: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=1, server_default=text("1")
+    )
     # 同一 run 内的稳定来源键：来源不重号。
     source_key: Mapped[str] = mapped_column(Text, nullable=False)
 
@@ -248,6 +251,7 @@ class RunSource(UUIDPrimaryKey, CreatedAt, Base):
 
     __table_args__ = (
         UniqueConstraint("run_id", "source_key", name="uq_run_sources_run_id_source_key"),
+        CheckConstraint("context_generation >= 1", name="context_generation_positive"),
         CheckConstraint(
             enum_check_expression("source_type", RunSourceType), name="source_type_valid"
         ),

@@ -181,16 +181,17 @@ class KnowledgeRepository(RepositoryBase):
             for chunk, index, acl in rows
         )
 
-    async def sources(self, run_id: UUID) -> tuple[RunSource, ...]:
-        return tuple(
-            (
-                await self.session.scalars(
-                    select(RunSource).where(RunSource.run_id == run_id).order_by(RunSource.id)
-                )
-            ).all()
-        )
+    async def sources(
+        self, run_id: UUID, *, context_generation: int | None = None
+    ) -> tuple[RunSource, ...]:
+        statement = select(RunSource).where(RunSource.run_id == run_id)
+        if context_generation is not None:
+            statement = statement.where(RunSource.context_generation == context_generation)
+        return tuple((await self.session.scalars(statement.order_by(RunSource.id))).all())
 
-    async def record(self, run_id: UUID, hit: Hit, *, source_key: str | None = None) -> RunSource:
+    async def record(
+        self, run_id: UUID, hit: Hit, *, context_generation: int, source_key: str | None = None
+    ) -> RunSource:
         return await self.record_values(
             run_id,
             source_key or f"chunk:{hit.chunk_id}",
@@ -204,9 +205,14 @@ class KnowledgeRepository(RepositoryBase):
                 "observed_acl_version": hit.acl_version,
                 "locator": hit.locator,
             },
+            context_generation=context_generation,
         )
 
-    async def record_values(self, run_id: UUID, key: str, values: dict[str, Any]) -> RunSource:
+    async def record_values(
+        self, run_id: UUID, key: str, values: dict[str, Any], *, context_generation: int
+    ) -> RunSource:
+        key = f"g{context_generation}:{key}"
+        values = {**values, "context_generation": context_generation}
         with database_errors():
             record = (
                 await self.session.execute(

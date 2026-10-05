@@ -21,7 +21,7 @@ from autumn_backend.policies.facts import Operation
 from autumn_backend.repositories.jobs import JobSpec
 from autumn_backend.services.actions import Payload
 from autumn_backend.services.ai_limits import read_ai_limits
-from autumn_backend.services.context import run_facts
+from autumn_backend.services.context import advance_context_generation, run_facts
 
 
 class InputRequest(Payload):
@@ -99,6 +99,7 @@ class InputWaitService:
             run.input_request = request.model_dump(mode="json")
             run.status = RunStatus.WAITING_INPUT
             run.version += 1
+            await advance_context_generation(uow, run, preserve_sources=True)
             await uow.session.flush()
             await uow.repositories.run_events.emit(
                 run.id,
@@ -153,6 +154,7 @@ class InputWaitService:
             run.status = RunStatus.QUEUED
             run.auth_session_id = actor.auth_session_id
             run.version += 1
+            await advance_context_generation(uow, run, preserve_sources=True)
             await uow.session.flush()
             await enqueue(
                 uow,
@@ -166,6 +168,7 @@ class InputWaitService:
                         "schema_version": 1,
                         "input_request_id": str(wait_id),
                         "answer_message_id": str(message.id),
+                        "execution_generation": run.execution_generation,
                     },
                 ),
             )

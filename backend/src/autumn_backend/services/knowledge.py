@@ -516,7 +516,9 @@ class KnowledgeService:
                     raise OptimisticLockError("来源权限已变化")
             result = []
             for hit in hits:
-                source = await uow.repositories.knowledge.record(run_id, hit)
+                source = await uow.repositories.knowledge.record(
+                    run_id, hit, context_generation=run.execution_generation
+                )
                 result.append(
                     Citation(
                         source.id,
@@ -622,7 +624,16 @@ class KnowledgeService:
                     raise ConflictError("历史来源闭包不完整，必须重建上下文")
                 inherited.extend(await uow.repositories.knowledge.sources(origin_id))
             for resource_id in sorted(
-                {source.resource_id for source in inherited if source.resource_id is not None}
+                {
+                    source.resource_id
+                    for source in (
+                        *inherited,
+                        *await uow.repositories.knowledge.sources(
+                            run_id, context_generation=run.execution_generation
+                        ),
+                    )
+                    if source.resource_id is not None
+                }
             ):
                 await uow.repositories.resources.get_for_update(resource_id)
             for source in inherited:
@@ -647,10 +658,15 @@ class KnowledgeService:
                     )
                 }
                 await uow.repositories.knowledge.record_values(
-                    run_id, f"dependency:{source.id}", values
+                    run_id,
+                    f"dependency:{source.id}",
+                    values,
+                    context_generation=run.execution_generation,
                 )
             # 已有直接来源也必须有效，不能借 manifest 更新给旧来源重新授权。
-            for source in await uow.repositories.knowledge.sources(run_id):
+            for source in await uow.repositories.knowledge.sources(
+                run_id, context_generation=run.execution_generation
+            ):
                 if not source_decision(
                     current_actor, facts, await source_fact(uow, source, run.user_id)
                 ).allowed:
@@ -661,6 +677,7 @@ class KnowledgeService:
                 "context_manifest": {
                     "schema_version": 1,
                     "complete": True,
+                    "context_generation": run.execution_generation,
                     "message_ids": [str(value) for value in message_ids],
                     "summary_id": str(summary_id) if summary_id else None,
                     "memory_ids": [str(value) for value in memory_ids],
@@ -702,6 +719,7 @@ class KnowledgeService:
                         "excerpt": page.text,
                         "locator": {"kind": "web", "url": url},
                     },
+                    context_generation=run.execution_generation,
                 )
                 result.append(Citation(source.id, page.text, None, None, None, source.locator))
             return tuple(result)

@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 
 from autumn_backend.db.enums import FileObjectStatus
-from autumn_backend.errors import IdempotencyConflictError, NotFoundError
+from autumn_backend.errors import ConflictError, IdempotencyConflictError, NotFoundError
 from autumn_backend.services.access import AuthorizationError
 from autumn_backend.services.storage import StorageService
 from autumn_backend.storage.local import LocalObjectStore
@@ -91,6 +91,10 @@ async def test_delete_blocks_access_before_physical_removal(
     await service.run_delete(e_case.owner, job.id, job.lease_token)
     with pytest.raises(FileNotFoundError):
         await service.store.read(file.object_key)
+    with pytest.raises(ConflictError):
+        await service.store.stage(file.object_key, b"%PDF-1.7\nexample")
+    with pytest.raises(ConflictError):
+        await service.store.promote(file.object_key, file.sha256, file.byte_size)
 
 
 async def test_orphan_cleanup_preserves_registered_staging(e_case: ServiceCase) -> None:
