@@ -19,6 +19,8 @@ from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from autumn_backend import __version__
+from autumn_backend.api.errors import install_error_handlers
+from autumn_backend.api.middleware import install_request_middleware
 from autumn_backend.config import Settings, get_settings
 from autumn_backend.db.session import create_engine, create_session_factory
 from autumn_backend.observability.logging import configure_logging, get_logger
@@ -66,6 +68,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = resolved
+    install_error_handlers(app)
+    install_request_middleware(app)
 
     @app.get("/healthz", tags=["health"], summary="存活探针")
     async def healthz() -> dict[str, str]:

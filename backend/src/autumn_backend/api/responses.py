@@ -1,0 +1,14 @@
+"""统一 JSON 输出；请求编号由服务端产生，不采信客户端传入值。"""
+
+from typing import Any
+
+from fastapi import Request
+from fastapi.encoders import jsonable_encoder
+from starlette.responses import JSONResponse
+
+
+def success(request: Request, data: Any, *, status: int = 200) -> JSONResponse:
+    return JSONResponse(
+        jsonable_encoder({"data": data, "request_id": request.state.request_id}),
+        status_code=status,
+    )
