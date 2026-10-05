@@ -444,6 +444,7 @@ class TestCommentConstraints:
             "ck_comments_body_not_empty",
             "ck_comments_status_valid",
             "ck_comments_parent_not_self",
+            "ck_comments_request_hash_shape",
         }
         assert expressions["ck_comments_parent_not_self"] == (
             "parent_id IS NULL OR parent_id <> id"

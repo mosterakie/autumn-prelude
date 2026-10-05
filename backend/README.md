@@ -9,8 +9,10 @@
 
 实施顺序见《秋序_v1.0_功能点实施顺序》与《v1.1 评审修订建议》。
 
-当前进度：**阶段 A 已完成**（A1–A7）——**28 张表**、4 个迁移批次；
-空库 base→head 可升级，`alembic check` 无漂移，Catalog 核对通过。
+当前进度：**A1–A7、B1–B12 与 C 核心/已实现模块并发回归完成**。
+**28 张表**、4 个基线迁移 + B8 留言请求身份增量迁移；空库 base→head、
+存量留言升级、`alembic check`、Catalog 与真实并发验收通过。
+节点、验证结果与后续边界见 [DEVELOPMENT.md](DEVELOPMENT.md)。
 数据契约的存储归属、枚举映射与有意偏离见 [DATA_CONTRACT.md](DATA_CONTRACT.md)。
 
 ### 阶段 A 验收与评审修复
@@ -127,7 +129,7 @@ backend/
 ├── scripts/                 # bootstrap_db.py / verify_fresh_migration.py
 │                            # patch_migration_triggers.py / probe_constraints.py
 │                            # recreate_database.py / ci.ps1（阶段闸门）
-├── ci/                      # github-actions-backend.yml（待搬到仓库根）
+├── DEVELOPMENT.md           # 本地节点实施进度；CI 位于仓库根 .github/workflows/backend.yml
 ├── DATA_CONTRACT.md         # v1 数据契约覆盖矩阵与枚举映射
 └── tests/
     ├── unit/                # 无 I/O 纯单测
@@ -219,7 +221,7 @@ autogenerate 的产物），因此只有在确实要重建基线时才走这条�
 | Mixin | 列 | 语义边界 |
 |---|---|---|
 | `UUIDPrimaryKey` | `id UUID` | 仅 UUID 主键表；`Setting` 等 str 主键表**不**套用 |
-| `Versioned` | `version INT NOT NULL` | **只服务私人内容/metadata 的乐观并发** |
+| `Versioned` | `version BIGINT NOT NULL` | **只服务私人内容/metadata 的乐观并发** |
 | `Timestamped` | `created_at` / `updated_at` timestamptz | 时间统一 UTC |
 | `SoftDelete` | `deleted_at` / `archived_at` | 两个时刻互相独立；`SoftDeleteState` 三态 |
 
@@ -244,26 +246,23 @@ Repository 能力。Mixin 只保留 `version_matches()` 让 service 表达"我�
 
 | 表 | 关键不变量 |
 |---|---|
-| `resources` | `version`（私人内容）与 `acl_version`（可见性）解耦；`private_note` 绝不公开 |
-| `resource_versions` | 不可变：编辑新增行，已发布版本行只读；`(resource_id, version_no)` 唯一 |
+| `resources` | `version`（私人内容）与 `acl_version`（可见性）解耦；私密备注默认不公开，只有明确选中 note 投影才复制 |
+| `resource_versions` | 不可变：编辑新增行，已发布版本行只读；`(resource_id, revision_no)` 唯一 |
 | `publications` | **单资源只有一个现行公开版本**（`resource_id WHERE revoked_at IS NULL`） |
-| `comments` | 幂等身份 `(author_id, client_id)` 唯一；父评论跨行不变量**不在 DB 层** |
-| `knowledge_indexes` | **公开索引只能来自公开投影**：CHECK 把 `corpus_kind` 绑死到具体外键列 |
+| `comments` | `(author_id, client_id)` 唯一 + 原始 `request_hash` 判等；一级回复与父未删除在锁内校验，同资源由复合 FK 和 Repository 共同校验 |
+| `knowledge_indexes` | `scope='public'` 必须绑定同资源、同 revision 的 publication；ready 且 active 才能使用 |
 | `run_sources` | AppendOnly：只记录，不提供 update/delete；绑定 acl_version 与片段位置 |
 
-**公开索引的防污染是结构性的**，不靠约定：
+**公开索引的来源绑定由结构约束保护**：
 
 ```
-corpus_kind = 'private' AND source_kind = 'resource_version'
-    AND resource_version_id IS NOT NULL AND publication_id IS NULL
-OR
-corpus_kind = 'public'  AND source_kind = 'publication'
-    AND publication_id IS NOT NULL AND resource_version_id IS NULL
+(scope = 'public') = (publication_id IS NOT NULL)
+(resource_id, revision_id, publication_id) -> publications(resource_id, revision_id, id)
+NOT is_active OR status = 'ready'
 ```
 
-于是"复用私人 chunk 再加 public 标记"无法被表达。向量列维度 1024 由
-`EMBEDDING_DIMENSIONS` 固定，`embedding_dimensions` 列另有 CHECK 与之对齐——
-换维度必须写迁移。
+公开分块必须从白名单投影文本构建，这仍需 E5 的应用服务与泄漏回归验证，
+不能只靠外键证明。向量在 `knowledge_chunks`，维度 1024；换维度必须写迁移。
 
 **父评论跨行不变量由 Repository 承担**（阶段 B8）：`CHECK` 不能跨行查询，
 普通 FK 只能保证父行存在，因此"父存在、父无 parent、`resource_id` 一致、父未删除"
@@ -277,12 +276,12 @@ corpus_kind = 'public'  AND source_kind = 'publication'
 | `runs` | `UNIQUE(user_id, idempotency_key)`；**同 conversation 只有一个非终态 run** |
 | `runs.next_event_seq` | 事件序号的**唯一**分配器，初值 1 → 首次分配得到 1 |
 | `run_events` | `PRIMARY KEY(run_id, seq)`；不接受外部指定 seq |
-| `quota_buckets` | `UNIQUE(user_id, window_start)`；`used>=0`、`reserved>=0`、`used+reserved<=limit_value` |
+| `quota_buckets` | `UNIQUE(user_id, window_start)`；`used>=0`、`reserved>=0`；锁内与当前配置限额比较，不存静态 limit_value |
 | `quota_reservations` | `UNIQUE(run_id)`；`amount = 1`；状态机不倒退 |
-| `jobs` | lease 字段与状态一致；活跃去重部分唯一索引；`ix_jobs_status_available_at` 对齐 claim 顺序 |
-| `provider_calls` | `UNIQUE(job_id, purpose, attempt_no)`；`unknown` 是一等状态 |
+| `jobs` | 幂等键全局唯一；SKIP LOCKED 领取；有效期、running 状态与 token 共同保护 heartbeat/finish |
+| `provider_calls` | `UNIQUE(logical_call_key, attempt_no)`；外部幂等键不随 attempt 改变；unknown 费用未知 |
 | `audit_events` | `before_version`/`after_version` **专指 `resources.version`**，ACL 前后值进 `metadata_json` |
-| `actions` | 幂等身份 `(run_id, kind, target_id, target_version, args_hash)`；状态与转换时刻一致 |
+| `actions` | 不可空 `(actor_id, idempotency_key)` + parameters_hash；保存内容与 ACL 双版本 |
 
 **非终态谓词由枚举派生**，不手写字符串：
 
@@ -301,7 +300,7 @@ Index(
 **`actions` 的状态与时刻用包含式约束**，不是双向等式：
 
 ```
-(confirmed_at IS NULL) = (status NOT IN ('confirmed', 'executed'))
+status NOT IN ('ready', 'running', 'succeeded') OR confirmed_at IS NOT NULL
 ```
 
 双向等式在这里是错的——执行态同时需要 `confirmed_at` 与 `executed_at`，
@@ -341,7 +340,7 @@ $env:AUTUMN_TEST_DATABASE_URL = "postgresql+asyncpg://postgres:postgres@127.0.0.
 - `gen_random_uuid()` 需要 PostgreSQL 13+（内置 `pgcrypto` 能力），当前实例为 17。
 - 本机另有一个 PostgreSQL 18 实例在 5432，但未安装 pgvector 且密码未知；
   请使用容器实例（5442）。
-- `pgvector` 是**核心依赖**（A5 起），不是可选 extras：`knowledge_indexes.embedding`
+- `pgvector` 是**核心依赖**（A5 起），不是可选 extras：`knowledge_chunks.embedding`
   是 `Vector(1024)` 列。
 - 模型里名为 `text` 的列会遮蔽 `sqlalchemy.text`，因此该类体内的部分索引谓词
   必须写 `sa.text(...)`；测试断言谓词编译结果是 SQL 表达式而非字符串，
@@ -350,5 +349,5 @@ $env:AUTUMN_TEST_DATABASE_URL = "postgresql+asyncpg://postgres:postgres@127.0.0.
   asyncpg 不支持），改为 JOIN `pg_class` 按 `relname` 查。
 - 不要用 `session.scalar()` 执行带 `RETURNING` 的 `UPDATE`：请用
   `session.execute(...)` 再取 `result.scalar_one()`，否则在 "仅 DML" 预编译下失败。
-- 改了模型约束后必须回退并**重新生成**对应迁移；直接改已应用的迁移会让
-  `alembic check` 与实际库不一致。
+- 现有基线已冻结。改模型后新增增量迁移，验证空库与已有数据升级；
+  不修改已应用的迁移来掩盖差异。`alembic check` 之外仍需验证 CHECK 和触发器。

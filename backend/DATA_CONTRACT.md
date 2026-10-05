@@ -5,7 +5,7 @@
 
 排序总原则：先让数据库能证明不变量，再让数据访问层能原子改状态。
 本表是"哪一项存在哪里"的**权威索引**；字段与约束的细节以
-[数据库设计](../../docs/architecture/database.md) 与模型代码为准。
+[数据库设计](../docs/architecture/database.md) 与模型代码为准。
 
 - 状态：**已建** = 28 张表内的实体；**已有 JSON 结构** = 落在某个 JSONB 列里；
   **延期** = 明确不做或不在此阶段做，并写明理由与承接位置。
@@ -21,6 +21,10 @@
 | 二（A5） | `content files comments reports` | retention_policies / resources / file_objects / resource_versions / publications / comments / reports |
 | 三（A6） | `run quota job audit` | conversations / runs / messages / actions / quota_buckets / quota_reservations / jobs / provider_calls / audit_events / run_events |
 | 四（A7） | `knowledge sources summaries memories` | knowledge_indexes / knowledge_chunks / run_sources / conversation_summaries / memories |
+
+B8 新增 `b8a71e06d204`：`comments.request_hash` 保存原始请求身份。
+迁移对已有留言回填，INSERT 触发器兼容原生 SQL；修改正文不会覆盖原摘要。
+摘要采用 UTF-8、稳定 JSON、SHA-256，仅规范化 CRLF/CR，不折叠空白或字符。
 
 ---
 

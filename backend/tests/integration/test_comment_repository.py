@@ -2,6 +2,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autumn_backend.db.models import Comment
@@ -73,5 +74,14 @@ async def test_database_hash_matches_python_for_legacy_inserts(
     comment = Comment(author_id=user.id, client_id=uuid4(), body=body)
     session.add(comment)
     await session.flush()
-    await session.refresh(comment)
+    assert not (
+        await CommentRepository(session).create_or_get(
+            author_id=user.id, client_id=comment.client_id, body=body
+        )
+    ).created
     assert comment.request_hash == request_hash(None, None, body)
+    with pytest.raises(IntegrityError):
+        async with session.begin_nested():
+            await session.execute(
+                update(Comment).where(Comment.id == comment.id).values(request_hash="invalid")
+            )

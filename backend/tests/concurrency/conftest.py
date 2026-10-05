@@ -6,12 +6,12 @@ from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from autumn_backend.db.enums import ConversationMode
-from autumn_backend.db.models import Conversation, User
+from autumn_backend.db.models import Conversation, Publication, Setting, User
 from autumn_backend.db.session import UnitOfWork, UnitOfWorkFactory
 from autumn_backend.repositories.jobs import JobSpec
 
@@ -46,8 +46,12 @@ async def concurrent_case(real_database_url: str) -> AsyncIterator[ConcurrentCas
     factory = UnitOfWorkFactory(async_sessionmaker(engine, expire_on_commit=False, autoflush=False))
     user_id = uuid4()
     job_kind = "test.concurrent_" + uuid4().hex
+    epoch_value, epoch_version = None, None
     try:
         async with factory() as uow:
+            epoch = await uow.repositories.settings.get("content_acl_epoch")
+            assert epoch is not None
+            epoch_value, epoch_version = epoch.value, epoch.version
             uow.session.add(
                 User(
                     id=user_id, email_normalized=f"{user_id}@example.com", password_hash="test-only"
@@ -88,7 +92,18 @@ async def concurrent_case(real_database_url: str) -> AsyncIterator[ConcurrentCas
     finally:
         try:
             async with engine.begin() as connection:
+                # published_by 是 RESTRICT；先清理本用例的发布，避免 FK 清理顺序依赖。
+                await connection.execute(
+                    delete(Publication).where(Publication.published_by == user_id)
+                )
                 await connection.execute(delete(User).where(User.id == user_id))
+                # 仅在独立测试库恢复迁移种子。真实业务中权限版本必须保持单调。
+                if epoch_value is not None:
+                    await connection.execute(
+                        update(Setting)
+                        .where(Setting.key == "content_acl_epoch")
+                        .values(value=epoch_value, version=epoch_version)
+                    )
         finally:
             await engine.dispose()
 

@@ -53,8 +53,10 @@ class CommentRepository(VersionedRepository[Comment]):
         if not body:
             raise InvalidInputError("留言正文不能为空")
         digest = request_hash(resource_id, parent_id, body)
-        identity = select(Comment).where(
-            Comment.author_id == author_id, Comment.client_id == client_id
+        identity = (
+            select(Comment)
+            .execution_options(populate_existing=True)
+            .where(Comment.author_id == author_id, Comment.client_id == client_id)
         )
         existing = (await self.session.execute(identity)).scalar_one_or_none()
         if existing is not None:
