@@ -7,6 +7,7 @@
 """
 
 from autumn_backend.policies.actor import ActorContext, ActorRole, Capability
+from autumn_backend.policies.capabilities import capabilities_for
 from autumn_backend.policies.decision import Decision, DenialCode
 from autumn_backend.policies.facts import PolicyFacts
 from autumn_backend.policies.policy import evaluate
@@ -18,5 +19,6 @@ __all__ = [
     "Decision",
     "DenialCode",
     "PolicyFacts",
+    "capabilities_for",
     "evaluate",
 ]

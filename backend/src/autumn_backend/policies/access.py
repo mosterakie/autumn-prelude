@@ -41,7 +41,11 @@ def verified_denial(actor: ActorContext, facts: PolicyFacts) -> Decision | None:
         return denial
     auth = facts.authentication
     assert auth is not None
-    if auth.status is not AccountStatus.ACTIVE or auth.verified_at is None:
+    if (
+        auth.status is not AccountStatus.ACTIVE
+        or auth.verified_at is None
+        or auth.verified_at > facts.now
+    ):
         return Decision(code=DenialCode.EMAIL_UNVERIFIED)
     return None
 
@@ -84,7 +88,9 @@ def publication_live(resource: ResourceFacts | None, facts: PolicyFacts) -> bool
     return publication is not None and publication.is_current and publication.revoked_at is None
 
 
-def target_owned(actor: ActorContext, facts: PolicyFacts, kind: TargetKind) -> bool:
+def target_owned(
+    actor: ActorContext, facts: PolicyFacts, kind: TargetKind, *, ignore_expiry: bool = False
+) -> bool:
     target = facts.target
     return (
         target is not None
@@ -92,7 +98,7 @@ def target_owned(actor: ActorContext, facts: PolicyFacts, kind: TargetKind) -> b
         and actor.user_id is not None
         and target.owner_id == actor.user_id
         and not target.is_deleted
-        and (target.expires_at is None or target.expires_at > facts.now)
+        and (ignore_expiry or target.expires_at is None or target.expires_at > facts.now)
     )
 
 

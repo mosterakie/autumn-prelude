@@ -53,3 +53,28 @@ public 模式的聊天仍只属于其用户；站长没有跨账号读取特权�
 owner 模式及本人私人对象重新检查两份升级时间；等于截止时间即失效。
 认证事实中的角色、账号和会话绑定、身份版本、撤销和闲置/绝对期限都须有效。
 匿名公开读取不因浏览器携带的账号状态改变，但保护操作必须验证当前认证。
+
+## 角色与工具矩阵（D4）
+
+| 当前身份 | 展示能力 | 附加前置条件 |
+| --- | --- | --- |
+| anonymous / 失效会话 | read_public | 现行公开投影、审核通过留言 |
+| 有效未验证账号 | read_public、own_chat | 聊天始终检查本人归属 |
+| 已验证 member 或未升级 owner | 上述 + public_ai、write_comment | 新 ask 检查冷却；Service 原子检查额度、速率、并发 |
+| 已验证且升级有效 owner | 上述 + private_knowledge、search_web、manage_content、manage_site、own_action、own_memory | 私人资料、动作、记忆仍只限本人；管理元数据不包括他人聊天 |
+
+capabilities_for 重新计算展示提示，不读取 Actor.capabilities。即使回传全部能力也
+不能让 member 联网。能力提示不等同余额或对象授权；每项操作仍须 evaluate。
+public / auto 问答不会授予联网能力；显式 web 仅限已升级站长。
+新的 ask 要求邮箱验证、会话归属、固定模式和冷却完成；截止时间相等允许受理。
+幂等重放先校验当前身份/会话模式与来源，再返回原结果，不能调用新 ask 冷却判断。
+恢复和已受理任务内工具不重复检查新 ask 冷却；余额、并发槽、幂等及计数仍由 E 处理。
+
+选择的资源 ID 不是授权。Service 对 resource_ids 逐项组装 facts 和校验；指定 ID
+却未找到资源须保留 requested_resource_id，不能退化为检索全部资料或留言板。
+留言作者可改删本人留言；已升级站长可审核删除他人留言，但不能替作者改写正文。
+pending 父留言只允许作者本人回复，已审核父留言可按其公开关联范围回复。
+
+Action.requires_step_up 由 Service 根据受控动作类型装配，不来自模型或 checkpoint。
+已过期 action 可以检查真实状态，但不能因此绕过 Service 的到期/状态/确认/双版本
+校验。权限判定成功不等同允许执行副作用。HTTP 和工具入口、提交事务均须重建并检查。

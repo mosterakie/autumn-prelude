@@ -65,7 +65,9 @@ class Operation(StrEnum):
     MANAGE_MODERATION = "manage_moderation"
     READ_AUDIT = "read_audit"
     READ_MEMORY = "read_memory"
-    WRITE_MEMORY = "write_memory"
+    CREATE_MEMORY = "create_memory"
+    UPDATE_MEMORY = "update_memory"
+    DELETE_MEMORY = "delete_memory"
 
 
 class TargetKind(StrEnum):
