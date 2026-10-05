@@ -1,8 +1,13 @@
 """事务内的数据访问能力；提交与回滚只由 UoW 执行。"""
 
 from collections.abc import Callable
+from uuid import UUID
 
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from autumn_backend.db.base import Base
+from autumn_backend.errors import InvalidInputError, NotFoundError, OptimisticLockError
 
 
 class RepositoryBase:
@@ -19,3 +24,65 @@ class RepositoryBase:
         if self._access_guard is not None:
             self._access_guard()
         return self._session
+
+
+class UUIDRepository[T: Base](RepositoryBase):
+    """只为 UUID 主键表提供读取与行锁，不用于 settings 或复合主键表。"""
+
+    model: type[T]
+
+    async def get(self, object_id: UUID) -> T | None:
+        return await self.session.get(self.model, object_id)
+
+    async def get_or_raise(self, object_id: UUID) -> T:
+        record = await self.get(object_id)
+        if record is None:
+            raise NotFoundError("对象不存在")
+        return record
+
+    async def get_for_update(self, object_id: UUID) -> T | None:
+        statement = (
+            select(self.model)
+            .where(self.model.__table__.c.id == object_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return (await self.session.execute(statement)).scalar_one_or_none()
+
+    async def get_for_update_or_raise(self, object_id: UUID) -> T:
+        record = await self.get_for_update(object_id)
+        if record is None:
+            raise NotFoundError("对象不存在")
+        return record
+
+
+class VersionedRepository[T: Base](UUIDRepository[T]):
+    """受保护的单语句 CAS；具体 Repository 以领域方法和字段白名单开放。"""
+
+    mutable_fields: frozenset[str] = frozenset()
+
+    async def _update_versioned(
+        self, object_id: UUID, expected_version: int, changes: dict[str, object]
+    ) -> T:
+        if expected_version < 0 or not changes or not changes.keys() <= self.mutable_fields:
+            raise InvalidInputError("不允许的版本更新")
+        table = self.model.__table__
+        statement = (
+            update(self.model)
+            .where(table.c.id == object_id, table.c.version == expected_version)
+            .values(**changes, version=expected_version + 1)
+            .returning(self.model)
+            .execution_options(populate_existing=True)
+        )
+        record = (await self.session.execute(statement)).scalar_one_or_none()
+        if record is None:
+            raise OptimisticLockError("对象已变化或不存在，请重新读取")
+        return record
+
+
+class AppendOnlyRepository(RepositoryBase):
+    """仅供专用追加方法继承；没有通用 record/update/delete。"""
+
+
+class ControlledMutableRepository[T: Base](UUIDRepository[T]):
+    """状态机表的读能力；状态变更必须由具体 Repository 的命名方法提供。"""
