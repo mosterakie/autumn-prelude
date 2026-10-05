@@ -9,6 +9,7 @@ from autumn_backend.repositories.comments import CommentRepository
 from autumn_backend.repositories.identity import SettingRepository, UserRepository
 from autumn_backend.repositories.jobs import JobRepository
 from autumn_backend.repositories.provider_calls import ProviderCallRepository
+from autumn_backend.repositories.publications import PublicationRepository
 from autumn_backend.repositories.quota import QuotaBucketRepository, QuotaReservationRepository
 from autumn_backend.repositories.runs import RunEventRepository, RunRepository
 
@@ -24,6 +25,7 @@ class Repositories:
     jobs: JobRepository
     provider_calls: ProviderCallRepository
     comments: CommentRepository
+    publications: PublicationRepository
 
     @classmethod
     def bind(cls, session: AsyncSession, access_guard: Callable[[], None]) -> "Repositories":
@@ -37,4 +39,5 @@ class Repositories:
             jobs=JobRepository(session, access_guard=access_guard),
             provider_calls=ProviderCallRepository(session, access_guard=access_guard),
             comments=CommentRepository(session, access_guard=access_guard),
+            publications=PublicationRepository(session, access_guard=access_guard),
         )

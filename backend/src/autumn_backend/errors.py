@@ -27,3 +27,7 @@ class QuotaExceededError(DomainError):
 
 class LeaseLostError(ConflictError):
     code = "lease_lost"
+
+
+class ConfigurationError(DomainError):
+    code = "configuration_unavailable"
