@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autumn_backend.repositories.audit import AuditEventRepository
 from autumn_backend.repositories.comments import CommentRepository
 from autumn_backend.repositories.conversations import ConversationRepository
 from autumn_backend.repositories.identity import SettingRepository, UserRepository
@@ -32,6 +33,7 @@ class Repositories:
     resources: ResourceRepository
     conversations: ConversationRepository
     memories: MemoryRepository
+    audit_events: AuditEventRepository
 
     @classmethod
     def bind(cls, session: AsyncSession, access_guard: Callable[[], None]) -> "Repositories":
@@ -49,4 +51,5 @@ class Repositories:
             resources=ResourceRepository(session, access_guard=access_guard),
             conversations=ConversationRepository(session, access_guard=access_guard),
             memories=MemoryRepository(session, access_guard=access_guard),
+            audit_events=AuditEventRepository(session, access_guard=access_guard),
         )
