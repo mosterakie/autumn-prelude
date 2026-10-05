@@ -7,10 +7,85 @@
 形态：**模块化单体**。HTTP API、Agent Runtime、Worker 是三个入口，共享
 `services` / `repositories` / `policies` 与基础设施适配器。
 
-实施顺序见《秋序_v1.0_功能点实施顺序》。
+实施顺序见《秋序_v1.0_功能点实施顺序》与《v1.1 评审修订建议》。
 
-当前进度：**阶段 A6 已完成**——阶段 A（地基与数据库契约）全部完成：
-22 张表、3 个迁移版本、`alembic check` 无漂移。
+当前进度：**阶段 A 已完成**（A1–A7）——**28 张表**、4 个迁移批次；
+空库 base→head 可升级，`alembic check` 无漂移，Catalog 核对通过。
+数据契约的存储归属、枚举映射与有意偏离见 [DATA_CONTRACT.md](DATA_CONTRACT.md)。
+
+### 阶段 A 验收与评审修复
+
+《秋序_实施顺序文档评审与 A 阶段验收》指出 4 个 P1 + 1 个 P2 缺陷、
+D1–D12 文档问题，并判定"迁移安装与已有测试通过，但完整设计契约验收不通过"。
+处置如下。
+
+**缺陷修复**（已**折进重写后的迁移基线**，不再有单独的修复 revision）：
+
+| 编号 | 缺陷 | 修复位置 |
+|---|---|---|
+| A-P1-1 | `publications.public_no` 被写成全局唯一 | `UNIQUE(resource_id, publication_no)` |
+| A-P1-2 | `actions` 幂等键含可空列，NULL 让唯一约束失效 | 不可空 `UNIQUE(actor_id, idempotency_key)` + `parameters_hash` 判等 |
+| A-P1-3 | 生产环境静默接受代码内的开发默认密钥 | `config.py`：生产必须**显式**提供且不得等于占位值 |
+| A-P1-4 | publication 的 revision 未绑定同一资源 | 复合外键 `(resource_id, revision_id)` |
+| A-P2-5 | 会话轮换 CHECK 与后继会话 `SET NULL` 冲突 | 单向蕴含，允许"后继已清理"的墓碑状态 |
+
+**基线重写**：按 `docs/architecture/database.md`（物理建模说明）
+把 stage A 的 schema 从 22 表扩到 **28 表**，并让所有既有表与该文档对齐
+（`RevisionDTO` 级别的字段归属、`publications` 的类型化公开列 + `public_fields`
+白名单、`knowledge_indexes` 与 `knowledge_chunks` 分层、`rate_limit_buckets`
+改为 `(scope_hash, policy_key, window_start)` 复合主键、`quota_buckets` 删除静态限额等）。
+因为**没有任何环境部署过**这批迁移，重写基线比堆叠一长串重命名 ALTER 更可读，
+且重建空库不存在"偷改迁移后假称无漂移"的风险。四个批次与
+`db/models/` 的四个模块一一对应。
+
+**`alembic check` 不等于契约验收**（评审 D7）：autogenerate 不比较 CHECK 表达式，
+也不把部分索引谓词变化算作差异。因此另有两层保护：
+
+- `tests/integration/test_catalog_contract.py`：Catalog 名称集合双向比对
+  （CHECK / UNIQUE / FK / 索引 / 触发器）、部分索引谓词逐条核对、
+  向量列确认维度与扩展。
+- 各 `test_*_constraints.py`：语义正反例（CHECK 表达式被 PostgreSQL 重写，
+  无法逐字比较，行为测试才是语义证据）。
+
+这套核对**当场抓到过真实漂移**：数据库里残留了被取代的旧约束名，
+而 `alembic check` 全程报"无漂移"。
+
+`alembic/env.py` 只排除 `db/external_tables.py` 里**显式登记**的外部表；
+不用"排除所有反射表"的口径，否则应用表从 metadata 遗漏也不会被报告。
+
+空库验证入口：`.\.venv\Scripts\python.exe scripts\verify_fresh_migration.py`
+（重建专用库 → base→head → `alembic check` → 打印表/约束/触发器计数）。
+
+**独立探针**：`.\.venv\Scripts\python.exe scripts\probe_constraints.py`
+不复用测试套件，直接用原生 SQL 验证高风险约束（复合外键归属、`public_fields`
+白名单、索引 scope 绑定、跨用户预留、部分唯一索引、复合主键、只追加表形态），
+全部在事务内回滚。它已经抓到过一个测试没覆盖的**真实缺陷**：
+`runs → conversations` 的复合外键列顺序写反，会拒绝所有合法的 run 插入。
+因此新增高风险约束时，除了测试请同时补一条探针。
+
+注意：可延迟外键（`resources.current_revision_id`、`runs` 的消息指针）
+默认在**提交时**才校验，断言前需要 `SET CONSTRAINTS ALL IMMEDIATE`。
+
+### 阶段 B 开工前已记录的前置约束
+
+评审中不属阶段 A 但必须在对应阶段落实的条目，记在这里避免丢失：
+
+- **B4**：`ON CONFLICT` 必须指定 `(user_id, idempotency_key)` 作为仲裁目标；
+  "同 conversation 非终态唯一"是另一种冲突，不得被吞掉后当成命中幂等键。
+- **B6**：`heartbeat` / `finish` 除匹配 `lease_token` 与 `status='running'` 外，
+  还要校验数据库时间的租约有效期；过期 token 不得靠 heartbeat 复活。
+  同时提供最小 `enqueue`，供 E 阶段使用。
+- **B9/E1**：发布时锁内分别比较 `expected_version` 与 `expected_acl_version`。
+- **B11**：`reclaim` 属阶段 **H8**（v1.0 文档误写为 F）。
+- **C3/C5**：并发 Repository 用例各用独立事务；C3 的两个 run 用不同
+  conversation 且额度 ≥ 2。C6 改为"同 run_id、amount 均为 1、bucket_id 不同"。
+- **C8**：核心 5 例之外补扩展并发回归（最后一份额度争抢、charge/release/refund
+  交错、内容 CAS、发布/撤回与旧预览、事件序号、父评论删除与回复创建、
+  旧 lease 不得提交业务结果）。
+- **H6/H7**：正式业务结果写入必须与 lease 校验、run generation 与权限复核
+  **同一事务**；provider 的稳定 `logical_call_key` 与物理 attempt 编号分开。
+- **G6**：step-up 轮换会话后，恢复需重新鉴权同一用户并受控原子关联新会话。
+- 最小 PostgreSQL 测试 CI 应在本阶段先建立，而不是等到 I1。
 
 ## 依赖方向（硬约束）
 
@@ -43,10 +118,17 @@ backend/
 │   ├── jobs/ workers/ providers/ storage/
 │   ├── db/                  # base（命名约定）/ mixins / naming / timestamps
 │   │   ├── enums.py         # 受控词表（VARCHAR + CHECK，不用原生 ENUM）
+│   │   ├── external_tables.py  # 允许存在的非应用表白名单（当前为空）
 │   │   ├── session.py       # UoW
 │   │   ├── health.py
-│   │   └── models/          # identity（A3）/ content（A5）/ runtime（A6）│   └── observability/       # 结构化日志与脱敏
-├── scripts/                 # 运维脚本（bootstrap_db.py）
+│   │   └── models/          # identity(批一) / content(批二) / runtime(批三)
+│   │                        # / knowledge(批四) —— 共 28 张表
+│   └── observability/       # 结构化日志与脱敏
+├── scripts/                 # bootstrap_db.py / verify_fresh_migration.py
+│                            # patch_migration_triggers.py / probe_constraints.py
+│                            # recreate_database.py / ci.ps1（阶段闸门）
+├── ci/                      # github-actions-backend.yml（待搬到仓库根）
+├── DATA_CONTRACT.md         # v1 数据契约覆盖矩阵与枚举映射
 └── tests/
     ├── unit/                # 无 I/O 纯单测
     ├── integration/         # 需要真实 PostgreSQL
@@ -70,9 +152,36 @@ Copy-Item .env.example .env   # 按本机情况填写
 本机开发实例：Docker 容器 `agent-postgres`（`pgvector/pgvector:pg17`）
 映射在 `127.0.0.1:5442`，应用库 `autumn`，会话时区已锁定 UTC。
 
+### 重新生成迁移基线
+
+迁移是**手工整理过的**（触发器、函数创建、`content_acl_epoch` 补种都不是
+autogenerate 的产物），因此只有在确实要重建基线时才走这条路径：
+
+1. 逐个批次临时限制 `db/models/__init__.py` 的导入，使 autogenerate 只看到该批次的差异；
+2. 每个批次：`alembic revision --autogenerate` → `alembic upgrade head`；
+3. 用 `scripts/patch_migration_triggers.py` 补上触发器与函数创建；
+4. 恢复完整的 `models/__init__.py`。
+
+**注意**：Alembic 默认把整个 `upgrade head` 放在**一个事务**里，
+因此任何一个批次的失败都会回滚全部批次——排查时不要只看最后一行输出。
+
+**注意（`use_alter`）**：模型里声明 `use_alter=True` 的可延迟外键，
+**不会**被它所在表的那条迁移发射；autogenerate 会把它生成到**下一个 revision**。
+例如 `resources.current_revision_id` 的外键实际由批次三建立。
+改这类外键（尤其是 `ondelete`）时必须**同时改内联声明与那条 `op.create_foreign_key`**，
+否则只有元数据被改、库里仍是旧动作——`alembic check` 会发现这个漂移，
+但用离线的 `alembic upgrade head --sql` 排查时看不到那条内联声明，容易误判。
+
 ## 常用命令
 
 ```powershell
+# 阶段闸门（推荐）：在全新空库上跑迁移 + 测试 + 静态检查 + 约束探针
+.\scripts\ci.ps1
+.\scripts\ci.ps1 -SkipRebuild      # 复用已有 CI 库，调试更快
+
+# 重建一个空库（默认只允许 *_ci / *_fresh / *_test 后缀，避免误伤开发库）
+.\.venv\Scripts\python.exe scripts\recreate_database.py autumn_fresh
+
 # 测试：unit 无需数据库；integration / concurrency 需要 AUTUMN_TEST_DATABASE_URL
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m pytest -q -m unit
@@ -82,10 +191,11 @@ Copy-Item .env.example .env   # 按本机情况填写
 .\.venv\Scripts\python.exe -m ruff format --check .
 .\.venv\Scripts\python.exe -m mypy
 
-# 迁移（A3/A4 起产生实例迁移）
+# 迁移
 .\.venv\Scripts\alembic.exe revision --autogenerate -m "message"
 .\.venv\Scripts\alembic.exe upgrade head
-.\.venv\Scripts\alembic.exe check          # 模型与迁移不得漂移
+.\.venv\Scripts\alembic.exe check          # 模型与迁移不得漂移（不覆盖 CHECK 与触发器）
+.\.venv\Scripts\python.exe scripts\verify_fresh_migration.py   # 空库 base→head + check
 
 # 运维自检
 .\.venv\Scripts\python.exe -m autumn_backend.cli config

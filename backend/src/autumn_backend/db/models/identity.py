@@ -1,19 +1,14 @@
-"""第一批模型：身份与账号基础。
+"""第一批模型：身份、会话与设置。
 
-覆盖实施顺序 A3 的六张表：
+对应 ``docs/architecture/database.md`` §3 与 §9，以及迁移批次一：
+``users`` / ``auth_sessions`` / ``auth_tokens`` / ``admin_factors`` /
+``rate_limit_buckets`` / ``settings``。
 
-- :class:`User` —— 账号、角色、邮箱规范化后的唯一性
-- :class:`AuthSession` —— 浏览器会话，**数据库只存令牌哈希**
-- :class:`AuthToken` —— 一次性令牌（验证邮箱 / 重置密码 / step-up / 站长引导）
-- :class:`AdminFactor` —— 站长 TOTP 与恢复码，密钥**密文**存储
-- :class:`RateLimitBucket` —— 速率窗口计数
-- :class:`Setting` —— 全站配置，含 ``content_acl_epoch``
+字段名、状态集合与约束按该文档；一处**有意偏离**：
 
-归属说明：模型放在 ``db/models`` 而不是 ``auth``，因为 ORM 模型属于数据库契约层；
-``auth`` 模块负责密码、会话、CSRF、TOTP 的**行为**，由它导入这些模型，而不是反过来。
-
-CHECK 约束的 ``name=`` 一律只写**标签**（如 ``"role_valid"``），
-完整名字 ``ck_<table>_<label>`` 由 ``Base.metadata`` 的命名约定补齐。
+- 文档说"业务 ID 统一 UUID，由应用生成"，模型里主路径确实是 ``uuid4``，
+  同时保留 ``gen_random_uuid()`` 作为数据库兜底，让原生 SQL 与 Repository 的
+  UPSERT 不必自己生成主键。见 ``db/mixins.py``。
 """
 
 from __future__ import annotations
@@ -24,119 +19,87 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
-    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
-    Integer,
+    PrimaryKeyConstraint,
     String,
+    Text,
     UniqueConstraint,
     Uuid,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from autumn_backend.db.base import Base
 from autumn_backend.db.enums import (
-    AdminFactorType,
+    AdminFactorKind,
     AuthTokenPurpose,
-    Role,
-    SettingValueType,
+    UserRole,
+    UserStatus,
     enum_check_expression,
     enum_column_type,
 )
-from autumn_backend.db.mixins import Timestamped, UUIDPrimaryKey, Versioned
-
-# 令牌与验证码哈希统一使用 SHA-256 十六进制（64 字符）。
-_HASH_LENGTH = 64
-# Argon2id 编码串长度随参数变化，留足空间。
-_PASSWORD_HASH_LENGTH = 255
-_EMAIL_LENGTH = 320  # RFC 5321 上限
-_TOTP_SECRET_LENGTH = 512  # 应用层对称加密后的密文长度上限
+from autumn_backend.db.mixins import (
+    Deletable,
+    Timestamped,
+    UUIDPrimaryKey,
+    Versioned,
+)
 
 
-class User(UUIDPrimaryKey, Timestamped, Versioned, Base):
+class User(UUIDPrimaryKey, Timestamped, Versioned, Deletable, Base):
     """账号。
 
     设计要点：
 
-    - ``email_canonical`` 承载唯一性（规范化后），``email`` 保留用户原始书写形式；
-      规范化规则由 auth service 在写入前应用，数据库用 CHECK 兜住"必须是规范化形式"。
-    - 密码只存 Argon2id 编码串；明文永不落库。
-    - ``session_version`` 是会话失效闸门：禁用账号、重置密码、强制登出时递增。
-    - ``cooldown_until`` 与 ``daily_quota_override`` 支撑"验证邮箱后冷却 24 小时、
-      每日 10 次 AI 请求，参数可调"；数值由 service 决定，本表只存结果。
-    - **不**设置自动过期时间：文章、收藏、聊天与日志默认永久保留。
+    - ``email_normalized`` 承载唯一性；**规范化**由 auth service 在写入前应用，
+      数据库用 CHECK 兜住"必须是小写且无首尾空白"。
+    - ``password_hash`` 只存 Argon2id 编码串。
+    - ``auth_version`` 是身份失效闸门：撤销身份或密码变化时递增，
+      ``auth_sessions.auth_version`` 必须与它一致才有效。
+    - ``ai_cooldown_until`` 在首次验证成功时按当时策略计算。
+    - ``status`` 与 ``deleted_at`` 分工：``disabled`` 是治理动作，
+      ``deleted_at`` 是账号删除入口。
+    - 唯一性**不因软删除解除**：重新使用同一邮箱需要明确的恢复或彻底清理流程。
     """
 
     __tablename__ = "users"
 
-    email: Mapped[str] = mapped_column(String(_EMAIL_LENGTH), nullable=False)
-    email_canonical: Mapped[str] = mapped_column(String(_EMAIL_LENGTH), nullable=False)
-    email_verified_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    email_normalized: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
 
-    password_hash: Mapped[str] = mapped_column(String(_PASSWORD_HASH_LENGTH), nullable=False)
-    password_changed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
+    role: Mapped[UserRole] = mapped_column(
+        enum_column_type(UserRole, length=16), nullable=False, default=UserRole.MEMBER
     )
-
-    role: Mapped[Role] = mapped_column(
-        enum_column_type(Role, length=16),
+    status: Mapped[UserStatus] = mapped_column(
+        enum_column_type(UserStatus, length=32),
         nullable=False,
-        default=Role.MEMBER,
+        default=UserStatus.PENDING_VERIFICATION,
     )
 
-    display_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    locale: Mapped[str] = mapped_column(String(16), nullable=False, default="zh-CN")
-
-    # 会话失效闸门：``auth_sessions.session_version`` 必须等于该值才仍然有效。
-    session_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    # ``messages.content_version`` 的兼容版本，用于消息内容结构演进。
-    content_schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-
-    # 账号状态与治理（v1 验收：账号禁用可阻断待执行工具与后续流式输出）。
-    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    daily_quota_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
-    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    sessions: Mapped[list[AuthSession]] = relationship(
-        back_populates="user", cascade="all, delete-orphan", lazy="raise"
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ai_cooldown_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
-    tokens: Mapped[list[AuthToken]] = relationship(
-        back_populates="user", cascade="all, delete-orphan", lazy="raise"
-    )
-    admin_factors: Mapped[list[AdminFactor]] = relationship(
-        back_populates="user", cascade="all, delete-orphan", lazy="raise"
-    )
+    # 撤销身份或密码变化时递增。
+    auth_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
 
     __table_args__ = (
-        # 邮箱规范化后唯一：唯一性建立在规范化列上，而不是用户书写形式。
-        UniqueConstraint("email_canonical", name="uq_users_email_canonical"),
-        # 数据库兜底：落库的规范化邮箱必须已经小写且无首尾空白。
+        UniqueConstraint("email_normalized", name="uq_users_email_normalized"),
         CheckConstraint(
-            "email_canonical = lower(btrim(email_canonical))",
-            name="email_canonical_normalized",
+            "email_normalized = lower(btrim(email_normalized))",
+            name="email_normalized_canonical",
         ),
-        CheckConstraint(enum_check_expression("role", Role), name="role_valid"),
-        CheckConstraint("session_version >= 1", name="session_version_positive"),
-        CheckConstraint("content_schema_version >= 1", name="content_schema_version_positive"),
-        # 覆盖额度为 0 是有意义的（临时停用 AI），但不允许负数。
-        CheckConstraint(
-            "daily_quota_override IS NULL OR daily_quota_override >= 0",
-            name="daily_quota_override_non_negative",
-        ),
-        # 站长账号不可通过公开注册产生：引导流程必须显式写入 owner 角色，
-        # 因此按 role 建索引，便于运维核对"是否存在多个站长"。
-        Index("ix_users_role_created_at", "role", "created_at"),
-        Index("ix_users_cooldown_until", "cooldown_until"),
+        CheckConstraint("length(email_normalized) > 0", name="email_normalized_not_empty"),
+        CheckConstraint(enum_check_expression("role", UserRole), name="role_valid"),
+        CheckConstraint(enum_check_expression("status", UserStatus), name="status_valid"),
+        CheckConstraint("auth_version >= 1", name="auth_version_positive"),
+        # 文档：索引覆盖 status 与创建时间。
+        Index("ix_users_status_created_at", "status", "created_at"),
     )
 
 
@@ -145,10 +108,11 @@ class AuthSession(UUIDPrimaryKey, Timestamped, Versioned, Base):
 
     设计要点：
 
-    - **数据库只存令牌哈希**（``token_hash`` 唯一）；明文令牌只在 Set-Cookie 时出现一次。
-    - ``csrf_version`` 与 ``session_version`` 支撑"登录 / step-up / 重置成功后轮换会话
-      并递增 csrf_version"；轮换保留旧行并在 ``rotated_at`` 标记，便于审计追溯。
-    - ``revoked_at`` 让撤销即时生效（v1 验收：账号禁用或 step-up 过期可阻断后续输出）。
+    - Cookie 保存高熵原始 token，表内**只存哈希**。
+    - 每次认证检查用户状态、``auth_version``、撤销与过期时间。
+    - 空闲过期与绝对过期分开：``idle_expires_at`` 随活动推进，
+      ``absolute_expires_at`` 是硬上限。
+    - ``UNIQUE(id, user_id)`` 支持 ``runs`` 的复合会话归属约束。
     """
 
     __tablename__ = "auth_sessions"
@@ -156,62 +120,47 @@ class AuthSession(UUIDPrimaryKey, Timestamped, Versioned, Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-
-    token_hash: Mapped[str] = mapped_column(String(_HASH_LENGTH), nullable=False)
-    # 必须与 users.session_version 一致才有效：账号级失效闸门。
-    session_version: Mapped[int] = mapped_column(Integer, nullable=False)
-    # 每次关键认证成功后递增；CSRF 令牌由服务端密钥绑定 (session_id, csrf_version)。
-    csrf_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-
-    created_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    token_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    # 每次关键认证成功后递增；CSRF 由独立服务端密钥对 (session_id, csrf_version) 签名。
+    csrf_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
+    # 必须与 users.auth_version 一致才有效。
+    auth_version: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # 轮换链：本条会话被哪条新会话取代；为 NULL 表示仍是当前会话。
-    rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    replaced_by_session_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("auth_sessions.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-
-    # step-up 升级验证到期时刻；过期即视为权限降回基础能力。
+    idle_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    absolute_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     step_up_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # 已使用的 TOTP 时间步，防止同一验证码重放。
-    last_totp_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-
-    user: Mapped[User] = relationship(back_populates="sessions", lazy="raise")
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("token_hash", name="uq_auth_sessions_token_hash"),
-        CheckConstraint("session_version >= 1", name="session_version_positive"),
+        # 支持 runs(auth_session_id, user_id) 的复合引用。
+        UniqueConstraint("id", "user_id", name="uq_auth_sessions_id_user_id"),
         CheckConstraint("csrf_version >= 1", name="csrf_version_positive"),
-        CheckConstraint("expires_at > created_at", name="expires_after_created"),
-        # 已被取代的会话必须同时有 rotated_at，避免"半截轮换"状态。
+        CheckConstraint("auth_version >= 1", name="auth_version_positive"),
+        CheckConstraint("absolute_expires_at > created_at", name="absolute_expires_after_created"),
         CheckConstraint(
-            "(replaced_by_session_id IS NULL) = (rotated_at IS NULL)",
-            name="rotation_marker_consistent",
+            "idle_expires_at <= absolute_expires_at", name="idle_within_absolute_expiry"
         ),
-        Index("ix_auth_sessions_user_id_revoked_at", "user_id", "revoked_at"),
-        Index("ix_auth_sessions_expires_at", "expires_at"),
+        Index("ix_auth_sessions_user_id", "user_id"),
+        # 文档：未撤销会话的过期时间。
+        Index(
+            "ix_auth_sessions_idle_expires_at_active",
+            "idle_expires_at",
+            postgresql_where=text("revoked_at IS NULL"),
+        ),
+        Index("ix_auth_sessions_absolute_expires_at", "absolute_expires_at"),
     )
 
 
 class AuthToken(UUIDPrimaryKey, Timestamped, Versioned, Base):
-    """一次性令牌。
+    """一次性链接令牌（邮箱验证 / 密码重置）。
 
-    设计要点：
-
-    - **只存哈希**，明文只在邮件/响应中出现一次；``token_hash`` 唯一。
-    - 幂等身份 ``(purpose, user_id, client_id)``：同一客户端重复提交返回原令牌，
-      而不是生成第二条；语义判等用 ``request_hash``（稳定 JSON 的 SHA-256）。
-      无浏览器场景 ``client_id`` 为 NULL，NULL 之间不参与唯一性，正是所需语义。
-    - ``consumed_at`` 一次性消费；``failed_attempts`` 支持错误次数上限。
-    - 站长 bootstrap 令牌同样走这张表（``purpose='admin_bootstrap'``）。
+    消费必须是原子更新：``consumed_at IS NULL AND expires_at > now()``，
+    成功只发生一次。发邮件由 jobs 处理，邮件任务中的必要令牌采用短期加密载荷，
+    消费或发送结束后移除秘密载荷，只留状态审计。
     """
 
     __tablename__ = "auth_tokens"
@@ -219,46 +168,35 @@ class AuthToken(UUIDPrimaryKey, Timestamped, Versioned, Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-
     purpose: Mapped[AuthTokenPurpose] = mapped_column(
         enum_column_type(AuthTokenPurpose, length=32), nullable=False
     )
-    token_hash: Mapped[str] = mapped_column(String(_HASH_LENGTH), nullable=False)
-    # 发起方可提供的幂等标识（由浏览器端生成）。
-    client_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    # 同一幂等身份的语义判等键：稳定 JSON 序列化后的 SHA-256。
-    request_hash: Mapped[str] = mapped_column(String(_HASH_LENGTH), nullable=False)
-
+    token_hash: Mapped[str] = mapped_column(Text, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    failed_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-
-    created_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    created_user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
-
-    user: Mapped[User] = relationship(back_populates="tokens", lazy="raise")
+    attempt_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 
     __table_args__ = (
         UniqueConstraint("token_hash", name="uq_auth_tokens_token_hash"),
         CheckConstraint(enum_check_expression("purpose", AuthTokenPurpose), name="purpose_valid"),
-        CheckConstraint("failed_attempts >= 0", name="failed_attempts_non_negative"),
+        CheckConstraint("attempt_count >= 0", name="attempt_count_non_negative"),
         CheckConstraint("expires_at > created_at", name="expires_after_created"),
-        UniqueConstraint(
-            "purpose", "user_id", "client_id", name="uq_auth_tokens_purpose_user_client"
-        ),
         Index("ix_auth_tokens_user_id_purpose", "user_id", "purpose"),
         Index("ix_auth_tokens_expires_at", "expires_at"),
     )
 
 
 class AdminFactor(UUIDPrimaryKey, Timestamped, Versioned, Base):
-    """站长额外验证因子。
+    """站长额外验证因子（TOTP）。
 
     设计要点：
 
-    - TOTP 密钥与恢复码**只存密文/哈希**，任何明文都不落库、不进日志。
-    - 恢复码以「盐 + 哈希」列表存放（JSONB），逐条单次使用。
-    - 同一用户的同一类型因子只允许一条仍然有效的记录（Partial Unique Index）。
+    - ``user_id`` **唯一**：一个账号只有一个 TOTP 因子。
+    - 密钥只存密文；``encryption_key_version`` 记录用哪一版主密钥加密，
+      便于轮换。主密钥不进数据库或仓库。
+    - ``last_used_time_step`` 防止同一时间片重放。
+    - 恢复码在 ``recovery_code_hashes`` 里只存哈希与使用状态，不存明文。
+    - 首次绑定必须验证正确代码后写 ``enabled_at``。
     """
 
     __tablename__ = "admin_factors"
@@ -266,101 +204,85 @@ class AdminFactor(UUIDPrimaryKey, Timestamped, Versioned, Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-
-    factor_type: Mapped[AdminFactorType] = mapped_column(
-        enum_column_type(AdminFactorType, length=32), nullable=False
+    kind: Mapped[AdminFactorKind] = mapped_column(
+        enum_column_type(AdminFactorKind, length=16), nullable=False, default=AdminFactorKind.TOTP
     )
-    # TOTP 共享密钥的密文（应用层对称加密）；列名刻意不含 secret 明文语义。
-    secret_ciphertext: Mapped[str] = mapped_column(String(_TOTP_SECRET_LENGTH), nullable=False)
-    # 恢复码：{"salt": "...", "codes": ["<hash>", ...]}；单个码消费后从列表移除。
-    recovery_codes: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    secret_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    encryption_key_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
+    # 已使用过的 TOTP 时间步，防同一时间片重放。
+    last_used_time_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    recovery_code_hashes: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
-    label: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    user: Mapped[User] = relationship(back_populates="admin_factors", lazy="raise")
+    enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        CheckConstraint(
-            enum_check_expression("factor_type", AdminFactorType), name="factor_type_valid"
-        ),
+        UniqueConstraint("user_id", name="uq_admin_factors_user_id"),
+        CheckConstraint(enum_check_expression("kind", AdminFactorKind), name="kind_valid"),
         CheckConstraint("length(secret_ciphertext) > 0", name="secret_ciphertext_not_empty"),
-        # 这是 Partial Unique Index（可见性谓词），不是 CHECK——CHECK 不能跨行。
-        Index(
-            "ix_admin_factors_user_type_active",
-            "user_id",
-            "factor_type",
-            unique=True,
-            postgresql_where=text("is_active AND disabled_at IS NULL"),
-        ),
+        CheckConstraint("encryption_key_version >= 1", name="encryption_key_version_positive"),
     )
 
 
-class RateLimitBucket(UUIDPrimaryKey, Timestamped, Base):
-    """速率窗口计数。
+class RateLimitBucket(Base, Timestamped):
+    """短期防滥用计数（复合主键，没有 ``id``）。
 
-    与 A6 的 ``quota_buckets`` 分工不同：本表管**速率**（单位时间的请求次数上限，
-    例如登录尝试、邮件发送、AI 速率窗口），``quota_buckets`` 管**额度**
-    （每日 10 次 AI 请求这类可预留、可结算的配额）。
+    设计要点：
 
-    并发纪律：首次创建必须 ``INSERT ... ON CONFLICT (user_id, window_start) DO NOTHING``
-    再 ``SELECT ... FOR UPDATE``——不能指望 ``FOR UPDATE`` 锁住不存在的行。
+    - ``scope_hash`` 是按策略对用户 ID、来源 IP 或规范化邮箱计算的服务端 **HMAC**，
+      **不存**可用于枚举账号的明文邮箱。
+    - 分别限制 AI 受理、登录尝试与邮件发送；同请求涉及多个限制时按固定键序加锁。
+    - 使用 PostgreSQL 原子更新，跨 API 进程一致。
+    - 这是短期计数，窗口结束即可清理；**不替代**永久保留的问答额度与操作审计。
     """
 
     __tablename__ = "rate_limit_buckets"
 
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
+    scope_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    policy_key: Mapped[str] = mapped_column(Text, nullable=False)
     window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    window_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
-    count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    hits: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("user_id", "window_start", name="uq_rate_limit_buckets_user_window"),
-        CheckConstraint("count >= 0", name="count_non_negative"),
-        CheckConstraint("window_seconds > 0", name="window_seconds_positive"),
+        PrimaryKeyConstraint(
+            "scope_hash", "policy_key", "window_start", name="pk_rate_limit_buckets"
+        ),
+        CheckConstraint("length(scope_hash) > 0", name="scope_hash_not_empty"),
+        CheckConstraint("length(policy_key) > 0", name="policy_key_not_empty"),
+        CheckConstraint("hits >= 0", name="hits_non_negative"),
+        CheckConstraint("window_end > window_start", name="window_ordered"),
+        Index("ix_rate_limit_buckets_expires_at", "expires_at"),
     )
 
 
 class Setting(Versioned, Timestamped, Base):
-    """全站配置（键值表）。
+    """后端白名单配置（str 主键，不套 UUIDRepository）。
 
     设计要点：
 
-    - **str 主键**，因此不继承 ``UUIDPrimaryKey``，也不能套用 ``UUIDRepository``；
-      访问方法必须自己实现（阶段 B2）。
-    - ``content_acl_epoch`` 就存在这里：任何影响公开可见范围的事务都要递增它
-      （架构文档 §5）。原子递增形如
-      ``UPDATE settings SET value = to_jsonb((value #>> '{}')::bigint + 1) ...``，
-      见阶段 B/E 的实现。
-    - ``is_sensitive=true`` 的项由 observability 层保证不进入日志与公开响应。
+    - ``schema_version`` 是**配置结构**版本，``version`` 是乐观并发版本，
+      两者含义不同，不能混用。
+    - ``content_acl_epoch`` 属于内部字段：只由公开范围事务递增，
+      **不能**被站长聊天任意指定数值；白名单由 service 维护。
+    - 密钥、文件系统任意路径与可执行代码不进入可由 Agent 修改的配置。
     """
 
     __tablename__ = "settings"
 
-    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
     value: Mapped[Any] = mapped_column(JSONB, nullable=False)
-    value_type: Mapped[SettingValueType] = mapped_column(
-        enum_column_type(SettingValueType, length=16), nullable=False
-    )
-    description: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    is_sensitive: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-
+    schema_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
     updated_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
     __table_args__ = (
-        CheckConstraint(
-            enum_check_expression("value_type", SettingValueType), name="value_type_valid"
-        ),
         CheckConstraint("length(key) > 0", name="key_not_empty"),
-        # 键统一小写点分命名（如 content_acl_epoch），避免出现大小写不同的同义键。
         CheckConstraint("key = lower(key)", name="key_lowercase"),
+        CheckConstraint("schema_version >= 1", name="schema_version_positive"),
+        CheckConstraint("version >= 0", name="version_non_negative"),
     )
 
 

@@ -1,13 +1,18 @@
 """数据库级受控词表（枚举）。
 
-为什么用 ``VARCHAR + CHECK`` 而不是 PostgreSQL 原生 ``ENUM``：
+取值来源与冻结依据：
+
+- 状态、可见性与角色取值来自 ``docs/architecture/database.md``；
+- 对外暴露的状态集合（run / job / action / comment）与 ``docs/architecture/api-contract.md``
+  的 DTO **同名同值**，避免"DB 一套、DTO 一套"的映射负担与漂移；
+- 事件类型来自接口契约的 SSE 事件表。
+
+为什么用 ``VARCHAR + 显式命名 CHECK`` 而不是 PostgreSQL 原生 ``ENUM``：
 
 - 原生 ENUM 增删值需要 ``ALTER TYPE``，``alembic --autogenerate`` 无法可靠表达，
-  会让 A4 的 ``alembic check`` 出现漂移；
-- 文档要求"主状态保持有限集合，具体原因用 error_code 表达"，
-  受控词表应当能被迁移显式修改，而不是隐式依赖类型系统；
-- ``values_callable`` 保证写入的是**值**而不是 ``UserRole.MEMBER`` 这种成员名，
-  避免"Python 改了成员名、数据库里字符串没变"的静默分裂。
+  会让 ``alembic check`` 出现漂移；
+- 受控词表应当能被迁移显式修改，而不是隐式依赖类型系统；
+- ``values_callable`` 保证写入的是**值**而不是成员名。
 """
 
 from __future__ import annotations
@@ -18,28 +23,39 @@ from collections.abc import Iterable
 from sqlalchemy import Enum as SAEnum
 
 __all__ = [
-    "ActionKind",
+    "NON_TERMINAL_RUN_STATUSES",
+    "TERMINAL_RUN_STATUSES",
+    "ActionAuthorizationKind",
     "ActionStatus",
-    "AdminFactorType",
+    "ActionType",
+    "AdminFactorKind",
+    "AuditResult",
     "AuthTokenPurpose",
     "CommentStatus",
     "ContentFormat",
     "ConversationMode",
-    "EventType",
-    "IndexKind",
-    "IndexSourceKind",
+    "FileObjectStatus",
+    "IndexScope",
+    "IndexStatus",
+    "JobPhase",
     "JobStatus",
+    "MemoryKind",
     "MessageRole",
-    "ModelProfile",
+    "MessageStatus",
     "ProviderCallPurpose",
     "ProviderCallStatus",
-    "PublicationRevokeReason",
     "QuotaReservationStatus",
-    "ResourceType",
-    "Role",
-    "RunSourceKind",
+    "ReportStatus",
+    "ResourceKind",
+    "RetentionAnchor",
+    "RetentionMode",
+    "RetentionScope",
+    "RunEventType",
+    "RunSourceType",
     "RunStatus",
-    "SettingValueType",
+    "SummaryStatus",
+    "UserRole",
+    "UserStatus",
     "enum_check_expression",
     "enum_column_type",
     "enum_values",
@@ -47,156 +63,162 @@ __all__ = [
 ]
 
 
-class Role(enum.StrEnum):
-    """主体角色。``anonymous`` 不落库，只在 ActorContext 中出现。"""
+# --------------------------------------------------------------- 身份会话 --
+class UserRole(enum.StrEnum):
+    """角色。公开注册强制 ``member``；``owner`` 只能由受控引导或管理流程授予。"""
 
     MEMBER = "member"
     OWNER = "owner"
 
 
+class UserStatus(enum.StrEnum):
+    """账号状态。
+
+    ``pending_verification`` 表示尚未完成邮箱验证；
+    ``disabled`` 必须能阻断待执行工具与后续流式输出。
+    """
+
+    PENDING_VERIFICATION = "pending_verification"
+    ACTIVE = "active"
+    DISABLED = "disabled"
+
+
 class AuthTokenPurpose(enum.StrEnum):
-    """一次性令牌用途。"""
+    """一次性链接令牌的用途。
 
-    EMAIL_VERIFY = "email_verify"
-    PASSWORD_RESET = "password_reset"
-    STEP_UP = "step_up"
-    ADMIN_BOOTSTRAP = "admin_bootstrap"
+    刻意只保留文档定义的两个值：step-up 由会话字段承担，
+    站长引导走本地 CLI 流程，都不需要落库的一次性链接。
+    """
+
+    VERIFY_EMAIL = "verify_email"
+    RESET_PASSWORD = "reset_password"
 
 
-class AdminFactorType(enum.StrEnum):
-    """站长额外验证因子。"""
+class AdminFactorKind(enum.StrEnum):
+    """站长额外验证因子类型。文档固定为 TOTP；恢复码是它的一个字段而非另一种因子。"""
 
     TOTP = "totp"
-    RECOVERY_CODE = "recovery_code"
 
 
-class SettingValueType(enum.StrEnum):
-    """``settings.value`` 的类型标签。
-
-    值列用 JSONB 存放，类型标签让 service 明确知道该怎么解释它，
-    也便于后续做配置校验。
-    """
-
-    STRING = "string"
-    INTEGER = "integer"
-    BOOLEAN = "boolean"
-    JSON = "json"
-
-
-class ResourceType(enum.StrEnum):
-    """资源类型白名单。
-
-    发布投影按类型白名单构造（架构文档 §5.1），因此这里的取值同时决定了
-    "哪些字段可以公开"。新增类型必须同时定义它的公开投影。
-    """
+# ----------------------------------------------------------------- 内容 ----
+class ResourceKind(enum.StrEnum):
+    """资源类型白名单。同一资源的 ``kind`` 创建后不可改。"""
 
     ARTICLE = "article"
-    WEB_PAGE = "web_page"
-    FILE = "file"
+    BOOKMARK = "bookmark"
+    DOCUMENT = "document"
+    WEBPAGE = "webpage"
 
 
 class ContentFormat(enum.StrEnum):
-    """``resource_versions`` 中正文的存储格式。"""
+    """版本正文的存储格式。"""
 
     MARKDOWN = "markdown"
-    HTML = "html"
-    TEXT = "text"
+    PLAIN = "plain"
 
 
 class CommentStatus(enum.StrEnum):
-    """评论状态。
+    """留言状态。公开读取要求 ``approved`` 且未删除。"""
 
-    主状态保持有限集合：撤下原因用 ``moderated_reason`` 之类的附加字段表达，
-    不为每种原因扩张状态集合。
-    """
-
-    VISIBLE = "visible"
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
     HIDDEN = "hidden"
 
 
-class PublicationRevokeReason(enum.StrEnum):
-    """撤销发布的原因。"""
+class ReportStatus(enum.StrEnum):
+    """举报处理状态。每个用户对同一留言最多一条 ``open`` 举报。"""
 
-    REPUBLISHED = "republished"
-    OWNER_REVOKED = "owner_revoked"
-    ADMIN_TAKEDOWN = "admin_takedown"
-    RESOURCE_DELETED = "resource_deleted"
-
-
-class IndexKind(enum.StrEnum):
-    """知识索引种类。"""
-
-    PRIVATE = "private"
-    PUBLIC = "public"
+    OPEN = "open"
+    RESOLVED = "resolved"
+    DISMISSED = "dismissed"
 
 
-class IndexSourceKind(enum.StrEnum):
-    """索引对象直接从哪一类投影构建。
+class FileObjectStatus(enum.StrEnum):
+    """对象存储中的文件生命周期。
 
-    **公开索引只能从公开投影构建**（架构文档 §9.2）：
-    本枚举与 :class:`IndexKind` 一起被 CHECK 约束绑定到具体外键列，
-    使"复用私人 chunk 再加 public 标记"在结构上无法表达。
+    阶段 E5 的 staging / finalize / delete 流程必须落在**可变**的文件对象记录上，
+    而不是反复修改声明不可变的 ``resource_versions``。
+    物理 I/O 不参与数据库事务，因此状态推进靠 job 收敛。
     """
 
-    RESOURCE_VERSION = "resource_version"
-    PUBLICATION = "publication"
+    STAGED = "staged"
+    READY = "ready"
+    PENDING_DELETE = "pending_delete"
+    FAILED = "failed"
 
 
-class RunSourceKind(enum.StrEnum):
-    """进入模型的来源是私人语料还是公开语料。"""
+# ----------------------------------------------------------------- 索引 ----
+class IndexScope(enum.StrEnum):
+    """知识索引作用域。``public`` 必须绑定当时的 publication。"""
 
-    PRIVATE = "private"
+    OWNER = "owner"
     PUBLIC = "public"
 
 
+class IndexStatus(enum.StrEnum):
+    """索引构建状态。查询只使用 ``ready`` 且活动的索引。"""
+
+    QUEUED = "queued"
+    BUILDING = "building"
+    READY = "ready"
+    FAILED = "failed"
+    RETIRED = "retired"
+
+
+# ----------------------------------------------------------------- 对话 ----
 class ConversationMode(enum.StrEnum):
-    """会话的固定模式。
-
-    一个 conversation 固定 ``public`` 或 ``owner``，**不随单次提问改变**：
-    ``thread_id`` 由服务端生成并绑定 conversation + mode，checkpoint 只是恢复依据，
-    不是权限来源（架构文档 §6.1）。
-    """
+    """会话的固定模式；创建后不可修改。``owner`` 模式必须属于站长。"""
 
     PUBLIC = "public"
     OWNER = "owner"
 
 
 class MessageRole(enum.StrEnum):
-    """消息角色。``messages`` 存完整消息文本；``run_events`` 只存事件与元数据。"""
+    """消息角色。工具协议消息保存在运行状态中，**不混入**普通对话展示。"""
 
     USER = "user"
     ASSISTANT = "assistant"
-    SYSTEM = "system"
-    TOOL = "tool"
+
+
+class MessageStatus(enum.StrEnum):
+    """消息状态。正文累计更新只允许发生在正在生成的 assistant 消息上。"""
+
+    COMPOSING = "composing"
+    COMPLETE = "complete"
+    INTERRUPTED = "interrupted"
+    HIDDEN = "hidden"
 
 
 class RunStatus(enum.StrEnum):
-    """Run 主状态：刻意保持有限集合。
+    """Run 主状态：数量有限，且与 API 契约的 ``status`` 枚举完全一致。
 
-    具体终止原因用 ``error_code`` / ``terminal_reason`` 表达，
-    不为每种原因扩张状态集合（架构文档 §6.2）。
-
-    非终态集合见 :data:`NON_TERMINAL_RUN_STATUSES`——Partial Unique Index
-    "同 conversation 只有一个非终态 run" 依赖它。
+    具体终止原因用 ``error_code`` 表达，不为每种原因扩张状态集合。
     """
 
-    PENDING = "pending"
+    QUEUED = "queued"
     RUNNING = "running"
     WAITING_INPUT = "waiting_input"
+    WAITING_APPROVAL = "waiting_approval"
+    WAITING_AUTH = "waiting_auth"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    CANCELLING = "cancelling"
     CANCELLED = "cancelled"
 
 
-#: 非终态集合。必须以字面量形式出现在 Partial Unique Index 谓词里，
-#: 因此这里既是语义定义，也是迁移的输入。
+#: 非终态集合。以字面量出现在 Partial Unique Index 谓词里，因此这里既是语义定义也是迁移输入。
+#: ``cancelling`` 属于非终态：取消已受理但尚未落定。
 NON_TERMINAL_RUN_STATUSES: tuple[str, ...] = (
-    RunStatus.PENDING.value,
+    RunStatus.QUEUED.value,
     RunStatus.RUNNING.value,
     RunStatus.WAITING_INPUT.value,
+    RunStatus.WAITING_APPROVAL.value,
+    RunStatus.WAITING_AUTH.value,
+    RunStatus.CANCELLING.value,
 )
 
-#: 终态集合。与上者互补且不可重叠。
+#: 终态集合；与上者互补且不可重叠。
 TERMINAL_RUN_STATUSES: tuple[str, ...] = (
     RunStatus.SUCCEEDED.value,
     RunStatus.FAILED.value,
@@ -204,41 +226,97 @@ TERMINAL_RUN_STATUSES: tuple[str, ...] = (
 )
 
 
-class ModelProfile(enum.StrEnum):
-    """模型档位：由服务端决定，不由模型/工具参数决定。"""
+class RunSourceType(enum.StrEnum):
+    """进入模型的来源类型。
 
-    PRIMARY = "primary"
-    FAST = "fast"
-    EMBEDDING = "embedding"
-    RERANK = "rerank"
-
-
-class EventType(enum.StrEnum):
-    """``run_events`` 的事件类型白名单。
-
-    受控词表而非自由字符串：新增事件类型必须显式改迁移，
-    避免前端契约在无人察觉的情况下漂移。
+    ``web`` 类型禁止填入无意义的资源外键，且只有站长运行可创建。
     """
 
-    RUN_STARTED = "run.started"
-    MESSAGE_DELTA = "message.delta"
+    RESOURCE = "resource"
+    WEB = "web"
+
+
+class RunEventType(enum.StrEnum):
+    """``run_events.type`` 白名单。
+
+    与接口契约第 5 节的 SSE 事件表**同名**：事件回放与前端契约由同一份词表约束。
+    新增事件类型必须显式改迁移，避免前端契约在无人察觉时漂移。
+    """
+
+    RUN_STATUS = "run.status"
     MESSAGE_SNAPSHOT = "message.snapshot"
-    TOOL_CALL = "tool.call"
-    TOOL_RESULT = "tool.result"
-    SOURCE_RECORDED = "source.recorded"
-    ACTION_REQUIRED = "action.required"
-    RUN_INVALIDATED = "run.invalidated"
-    RUN_TERMINAL = "run.terminal"
+    TOOL_STARTED = "tool.started"
+    TOOL_FINISHED = "tool.finished"
+    KNOWLEDGE_PROCESSING = "knowledge.processing"
+    ACTION_PROPOSED = "action.proposed"
+    ACTION_SUCCEEDED = "action.succeeded"
+    SOURCE_INVALIDATED = "source.invalidated"
+    SCOPE_CHANGED = "scope.changed"
+    ERROR = "error"
+    DONE = "done"
+
+
+class SummaryStatus(enum.StrEnum):
+    """会话摘要状态。同会话最多一个 ``active``。"""
+
+    ACTIVE = "active"
+    STALE = "stale"
+
+
+class MemoryKind(enum.StrEnum):
+    """记忆类型。首版仅站长明确要求记住时创建。"""
+
+    PREFERENCE = "preference"
+    FACT = "fact"
+
+
+# ----------------------------------------------------------- 操作与配额 ----
+class ActionStatus(enum.StrEnum):
+    """动作状态机，与 ``ActionDTO.status`` 同名同值。"""
+
+    PROPOSED = "proposed"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
+    READY = "ready"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
+
+
+class ActionType(enum.StrEnum):
+    """动作类型。
+
+    接口契约只给出 ``ActionDTO.type`` 这个字段，没有列全部取值；这里是
+    服务端白名单的**初始集合**：发布、撤回、删除、改设置、请求补充信息，
+    以及记忆的增删改与保留策略应用（``POST /api/settings/retention/preview``
+    同样返回 ActionDTO）。新增类型必须显式改迁移。
+    """
+
+    PUBLISH = "publish"
+    REVOKE = "revoke"
+    DELETE = "delete"
+    UPDATE_SETTINGS = "update_settings"
+    PROVIDE_INPUT = "provide_input"
+    CREATE_MEMORY = "create_memory"
+    UPDATE_MEMORY = "update_memory"
+    DELETE_MEMORY = "delete_memory"
+    APPLY_RETENTION = "apply_retention"
+
+
+class ActionAuthorizationKind(enum.StrEnum):
+    """授权来源：用户明确请求，或已确认的预览。
+
+    模型新生成或范围不明的内容**必须**走 ``confirmed_preview``；
+    ``requires_confirmation`` 由服务规则决定，模型不能把它设为 false 来直接公开。
+    """
+
+    EXPLICIT_REQUEST = "explicit_request"
+    CONFIRMED_PREVIEW = "confirmed_preview"
 
 
 class QuotaReservationStatus(enum.StrEnum):
-    """配额预留状态机。**任何转换都不倒退**（Repository 文档 §7.3）。
-
-    - ``reserved``：已接受、尚未调用供应商
-    - ``charged``：首次进入供应商阶段
-    - ``released``：供应商调用前取消/本地失败
-    - ``refunded``：确认的服务端/供应商故障补偿
-    """
+    """配额预留状态机。任何转换都不倒退。"""
 
     RESERVED = "reserved"
     CHARGED = "charged"
@@ -246,22 +324,8 @@ class QuotaReservationStatus(enum.StrEnum):
     REFUNDED = "refunded"
 
 
-class JobStatus(enum.StrEnum):
-    """持久队列任务状态。"""
-
-    QUEUED = "queued"
-    RUNNING = "running"
-    SUCCEEDED = "succeeded"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-
 class ProviderCallStatus(enum.StrEnum):
-    """外部调用受限状态机。
-
-    ``unknown`` 用于网络超时或无法确认远端最终状态，
-    **不能**简单当作"失败且费用为 0"（Repository 文档 §9）。
-    """
+    """外部调用状态机。``unknown`` 不能当作零费用。"""
 
     PREPARED = "prepared"
     DISPATCHED = "dispatched"
@@ -271,7 +335,7 @@ class ProviderCallStatus(enum.StrEnum):
 
 
 class ProviderCallPurpose(enum.StrEnum):
-    """外部调用的用途：决定成本归类与对账方式。"""
+    """外部调用用途：决定成本归类与对账方式。"""
 
     CHAT = "chat"
     TOOL = "tool"
@@ -282,24 +346,66 @@ class ProviderCallPurpose(enum.StrEnum):
     EMAIL = "email"
 
 
-class ActionKind(enum.StrEnum):
-    """需要用户确认的持久等待动作类型。"""
+class JobStatus(enum.StrEnum):
+    """任务状态，与 ``JobDTO.status`` 同名同值。
 
-    PUBLISH = "publish"
-    REVOKE = "revoke"
-    DELETE = "delete"
-    UPDATE_SETTINGS = "update_settings"
-    PROVIDE_INPUT = "provide_input"
+    ``waiting_auth``：需要额外验证但验证已过期，站长验证后可恢复。
+    """
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    WAITING_AUTH = "waiting_auth"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLING = "cancelling"
+    CANCELLED = "cancelled"
 
 
-class ActionStatus(enum.StrEnum):
-    """动作状态机。``expired`` 是终态之一，但主状态集合仍保持有限。"""
+class JobPhase(enum.StrEnum):
+    """任务业务阶段。
 
-    PENDING = "pending"
-    CONFIRMED = "confirmed"
-    EXECUTED = "executed"
-    REJECTED = "rejected"
-    EXPIRED = "expired"
+    ``fetching`` / ``parsing`` / ``embedding`` 来自接口契约的 ``JobDTO.phase`` 示例；
+    ``finalizing`` / ``deleting`` / ``indexing`` 是存储与索引 job 自身需要的阶段。
+    """
+
+    FETCHING = "fetching"
+    PARSING = "parsing"
+    EMBEDDING = "embedding"
+    INDEXING = "indexing"
+    FINALIZING = "finalizing"
+    DELETING = "deleting"
+
+
+# ------------------------------------------------------- 保留策略与审计 ----
+class RetentionScope(enum.StrEnum):
+    """保留策略作用域。当前默认全部 ``forever``。"""
+
+    RESOURCES = "resources"
+    CONVERSATIONS = "conversations"
+    AUDIT_EVENTS = "audit_events"
+    RUNTIME_LOGS = "runtime_logs"
+
+
+class RetentionMode(enum.StrEnum):
+    """保留模式。``forever`` 时 ``ttl_days`` 必须为空。"""
+
+    FOREVER = "forever"
+    TTL = "ttl"
+
+
+class RetentionAnchor(enum.StrEnum):
+    """TTL 从哪个时间点起算。"""
+
+    CREATED_AT = "created_at"
+    UPDATED_AT = "updated_at"
+
+
+class AuditResult(enum.StrEnum):
+    """审计事件的结果。``denied`` 表示权限判定拒绝了这次操作。"""
+
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    DENIED = "denied"
 
 
 def enum_values(enum_class: type[enum.Enum]) -> list[str]:
@@ -312,11 +418,7 @@ def enum_check_expression(column: str, enum_class: type[enum.Enum]) -> str:
 
     表达式里的字面量只来自代码里的枚举定义，不含任何外部输入。
     """
-    values = enum_values(enum_class)
-    if not values:
-        raise ValueError(f"{enum_class.__name__} 没有任何值，无法生成 CHECK 约束")
-    literals = ", ".join(f"'{value}'" for value in values)
-    return f"{column} IN ({literals})"
+    return in_predicate(column, enum_values(enum_class))
 
 
 def enum_column_type(enum_class: type[enum.Enum], *, length: int | None = None) -> SAEnum:
@@ -332,16 +434,13 @@ def enum_column_type(enum_class: type[enum.Enum], *, length: int | None = None) 
 
 
 def in_predicate(column: str, values: Iterable[str]) -> str:
-    """生成 ``column IN ('a', 'b')`` 形式的**部分索引谓词**。
+    """生成 ``column IN ('a', 'b')`` 形式的部分索引谓词或 CHECK 表达式。
 
-    与 :func:`enum_check_expression` 的区别：这里接受任意字符串序列（例如
-    ``NON_TERMINAL_RUN_STATUSES``），用于 ``Index(postgresql_where=...)``。
     谓词必须是不可变表达式：不能含子查询，也不能依赖 ``now()``。
-
     字面量只来自代码里的常量定义，不含任何外部输入。
     """
     items = list(values)
     if not items:
-        raise ValueError("部分索引谓词至少要有一个取值")
+        raise ValueError("IN 谓词至少要有一个取值")
     literals = ", ".join(f"'{item}'" for item in items)
     return f"{column} IN ({literals})"

@@ -1,24 +1,21 @@
-"""第二批模型：内容、发布与检索。
+"""第二批模型：保留策略、内容、版本、发布、文件对象、留言与举报。
 
-覆盖实施顺序 A5 的六张表：
+对应 ``docs/architecture/database.md`` §4、§6、§9，以及迁移批次二：
+``retention_policies`` / ``resources`` / ``file_objects`` / ``resource_versions`` /
+``publications`` / ``comments`` / ``reports``。
 
-- :class:`Resource` —— 资源主体，**``version`` 与 ``acl_version`` 分离**
-- :class:`ResourceVersion` —— 不可变的内容版本
-- :class:`Publication` —— 公开投影，单资源只有一个现行版本
-- :class:`Comment` —— 评论，幂等身份 ``(author_id, client_id)``
-- :class:`KnowledgeIndex` —— 私有/公开分开的检索索引（pgvector，1024 维）
-- :class:`RunSource` —— 实际进入模型的全部来源（AppendOnly 语义）
+关键结构约束（文档 §4）：
 
-版本语义（架构文档 §5）：
+- ``resources.current_revision_id`` 用**可延迟复合外键**指向
+  ``resource_versions(resource_id, id)``，确保它指向本资源的版本。
+- ``publications`` 用 ``(resource_id, revision_id)`` 复合外键绑定确切原稿版本，
+  并以 ``UNIQUE(resource_id, revision_id, id)`` 供索引表严格引用。
+- ``comments`` 的 ``resource_id`` **可空**（独立留言板）；父子同资源用
+  自引用复合外键保证。
 
-| 字段 | 语义 | 递增时机 |
-|---|---|---|
-| ``resources.version`` | 私人内容 / metadata 的乐观并发版本 | 编辑原稿、标题、标签、私密备注、归档 |
-| ``resources.acl_version`` | 可见性 / 发布状态版本 | publish、revoke、软删除、恢复 |
-| ``settings.content_acl_epoch`` | 全站公开权限 epoch | 任何影响公开可见范围的事务 |
-
-**publish / revoke 不递增 ``resources.version``**：可见性变化不是内容变化。
-因此 ``acl_version`` 是这里显式声明的列，不属于 ``Versioned`` Mixin。
+``file_objects`` 是文档批次清单之外、由实施顺序评审要求的补充实体：文件
+``staged`` / ``ready`` / ``pending_delete`` 生命周期必须落在**可变**记录上，
+而不是反复修改声明不可变的 ``resource_versions``。
 """
 
 from __future__ import annotations
@@ -27,67 +24,137 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-import sqlalchemy as sa
-from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
-    Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     Uuid,
+    func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.orm import Mapped, mapped_column
 
 from autumn_backend.db.base import Base
 from autumn_backend.db.enums import (
     CommentStatus,
     ContentFormat,
-    IndexKind,
-    IndexSourceKind,
-    PublicationRevokeReason,
-    ResourceType,
-    RunSourceKind,
+    FileObjectStatus,
+    ReportStatus,
+    ResourceKind,
+    RetentionAnchor,
+    RetentionMode,
+    RetentionScope,
     enum_check_expression,
     enum_column_type,
 )
-from autumn_backend.db.mixins import SoftDelete, Timestamped, UUIDPrimaryKey, Versioned
+from autumn_backend.db.mixins import (
+    Deletable,
+    SoftDelete,
+    Timestamped,
+    UUIDPrimaryKey,
+    Versioned,
+)
 
-# 嵌入向量维度。由配置选定的向量模型决定；A5 定稿为 1024。
-# 注意：pgvector 的列维度不可参数化到运行期——换维度必须写迁移。
-EMBEDDING_DIMENSIONS = 1024
+#: 公开投影允许的字段名。``public_fields`` 只能取这个集合的子集。
+PUBLIC_FIELD_NAMES: tuple[str, ...] = ("title", "body", "note", "url", "tags")
 
-# 文本片段上限（用于 rerank 与展示），不限制正文长度本身。
-_SNIPPET_LENGTH = 4000
-_URL_LENGTH = 2048
-_HASH_LENGTH = 64
-
-#: HNSW 向量索引名（显式命名，避免 alembic check 漂移）。
-KNOWLEDGE_INDEX_VECTOR_INDEX = "ix_knowledge_indexes_embedding_hnsw"
-
-#: 片段文本的数据库列名。
-CHUNK_TEXT_COLUMN = "text"
+_PUBLIC_FIELDS_LITERAL = ", ".join(f"'{name}'" for name in PUBLIC_FIELD_NAMES)
 
 
-class Resource(UUIDPrimaryKey, Timestamped, Versioned, SoftDelete, Base):
-    """资源主体（文章 / 网页 / 文件）。
+class RetentionPolicy(UUIDPrimaryKey, Timestamped, Versioned, Base):
+    """保留策略。
 
     设计要点：
 
-    - ``version`` 与 ``acl_version`` **完全解耦**：前者管私人内容并发，
-      后者管可见性；publish / revoke 只动后者。
-    - ``private_note`` 是私密备注：**绝不进入公开 API 或公开索引**
-      （v1 验收标准），发布投影按类型白名单构造，天然不含它。
-    - ``title`` / ``tags`` 属于可公开 metadata；``source_url`` 是抓取来源。
-    - 软删除与归档由 ``SoftDelete`` 提供，公开读取必须同时过滤这两个时刻。
+    - ``forever`` 时 ``ttl_days`` 必须为空；``ttl`` 时必须为正。
+    - 同一 ``scope`` 与 ``resource_kind`` 只允许一个 ``is_active`` 策略。
+      ``resource_kind`` 可空，按文档要求"NULL 值按同一个分类处理"——
+      因此拆成两个部分唯一索引：一个管有具体 kind 的策略，一个管通用策略，
+      比依赖 ``NULLS NOT DISTINCT`` 更直观且不依赖方言开关。
+    - 给历史数据设置 ``expires_at`` 是**可预览的独立作业**，
+      不能只修改策略行就默默开始删除。
+    """
+
+    __tablename__ = "retention_policies"
+
+    scope: Mapped[RetentionScope] = mapped_column(
+        enum_column_type(RetentionScope, length=32), nullable=False
+    )
+    resource_kind: Mapped[ResourceKind | None] = mapped_column(
+        enum_column_type(ResourceKind, length=16), nullable=True
+    )
+    mode: Mapped[RetentionMode] = mapped_column(
+        enum_column_type(RetentionMode, length=16), nullable=False, default=RetentionMode.FOREVER
+    )
+    ttl_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    anchor: Mapped[RetentionAnchor] = mapped_column(
+        enum_column_type(RetentionAnchor, length=16),
+        nullable=False,
+        default=RetentionAnchor.CREATED_AT,
+    )
+    applies_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    include_existing: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(enum_check_expression("scope", RetentionScope), name="scope_valid"),
+        CheckConstraint(
+            enum_check_expression("resource_kind", ResourceKind), name="resource_kind_valid"
+        ),
+        CheckConstraint(enum_check_expression("mode", RetentionMode), name="mode_valid"),
+        CheckConstraint(enum_check_expression("anchor", RetentionAnchor), name="anchor_valid"),
+        # forever 时 ttl_days 为空；ttl 时**必须给出正值**。
+        # 注意必须写成 NULL 安全的形式：若只写 ``(mode='ttl' AND ttl_days > 0)``，
+        # 当 ``ttl_days`` 为 NULL 时整个 OR 分支求值为 NULL，CHECK **不会**拦下它，
+        # "ttl 模式却没有天数"就会漏过去。
+        CheckConstraint(
+            "(mode = 'forever' AND ttl_days IS NULL) "
+            "OR (mode = 'ttl' AND ttl_days IS NOT NULL AND ttl_days > 0)",
+            name="ttl_matches_mode",
+        ),
+        # 同一 scope + 具体 kind 只允许一个活动策略。
+        Index(
+            "uq_retention_policies_active_kind",
+            "scope",
+            "resource_kind",
+            unique=True,
+            postgresql_where=text("is_active AND resource_kind IS NOT NULL"),
+        ),
+        # 同一 scope 的通用策略（resource_kind IS NULL）只允许一个活动策略。
+        Index(
+            "uq_retention_policies_active_global",
+            "scope",
+            unique=True,
+            postgresql_where=text("is_active AND resource_kind IS NULL"),
+        ),
+    )
+
+
+class Resource(UUIDPrimaryKey, Timestamped, Versioned, SoftDelete, Base):
+    """资源主体。
+
+    设计要点：
+
+    - ``kind`` 创建后不可改（由 service 保证；数据库无历史可查）。
+    - ``version`` 是内容/元数据乐观并发版本；``acl_version`` 只在公开范围变化时递增。
+      编辑内容**不**递增 ``acl_version``，发布/撤回**不**递增 ``version``。
+    - ``slug`` 是对外稳定标识且**全局唯一**；私密状态仍对外返回 404。
+    - ``current_revision_id`` 是当前私密版本指针，用可延迟复合外键绑定本资源版本。
+    - ``retention_policy_id`` 为空表示继承该类型的默认策略。
     """
 
     __tablename__ = "resources"
@@ -95,60 +162,116 @@ class Resource(UUIDPrimaryKey, Timestamped, Versioned, SoftDelete, Base):
     owner_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-    type: Mapped[ResourceType] = mapped_column(
-        enum_column_type(ResourceType, length=16), nullable=False
+    kind: Mapped[ResourceKind] = mapped_column(
+        enum_column_type(ResourceKind, length=16), nullable=False
     )
+    slug: Mapped[str] = mapped_column(String(160), nullable=False)
+    current_revision_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
 
-    title: Mapped[str] = mapped_column(String(512), nullable=False, default="")
-    slug: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    tags: Mapped[list[str]] = mapped_column(
-        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
-    )
-    source_url: Mapped[str | None] = mapped_column(String(_URL_LENGTH), nullable=True)
+    # 公开范围版本：publish / revoke / 软删除 / 恢复时递增；与 version 无关。
+    acl_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 
-    # 私密备注：只在私人上下文可见，公开投影必须排除。
-    private_note: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    # 可见性版本：publish / revoke / 软删除 / 恢复 时递增；与 version 无关。
-    acl_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-
-    versions: Mapped[list[ResourceVersion]] = relationship(
-        back_populates="resource", cascade="all, delete-orphan", lazy="raise"
+    retention_policy_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("retention_policies.id", ondelete="SET NULL"), nullable=True
     )
-    publications: Mapped[list[Publication]] = relationship(
-        back_populates="resource", cascade="all, delete-orphan", lazy="raise"
-    )
-    comments: Mapped[list[Comment]] = relationship(
-        back_populates="resource", cascade="all, delete-orphan", lazy="raise"
-    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        CheckConstraint(enum_check_expression("type", ResourceType), name="type_valid"),
+        UniqueConstraint("slug", name="uq_resources_slug"),
+        # 支持其他表的复合归属约束（文档 §4）。
+        UniqueConstraint("id", "owner_id", name="uq_resources_id_owner_id"),
+        CheckConstraint(enum_check_expression("kind", ResourceKind), name="kind_valid"),
+        CheckConstraint("length(slug) > 0", name="slug_not_empty"),
         CheckConstraint("acl_version >= 0", name="acl_version_non_negative"),
-        Index("ix_resources_owner_id_type_created_at", "owner_id", "type", "created_at"),
-        # 公开读取与私人列表都要按"未删除且未归档"过滤。
-        Index("ix_resources_deleted_at_archived_at", "deleted_at", "archived_at"),
-        # slug 在同一作者范围内唯一（非全局唯一：不同作者可以取同名 slug）。
+        # 可延迟复合外键：current_revision 必须属于本资源。
+        # use_alter：resource_versions 反向引用 resources，建表顺序上必须后补。
+        #
+        # 删除动作刻意用 ``NO ACTION`` 而不是 ``SET NULL``：SET NULL 会把**列组里的
+        # 每一列**都置空，而 ``id`` 是 NOT NULL 主键，因此 SET NULL 永远无法完成。
+        # 语义上"删掉当前版本"本来就该先由 service 重新指向新版本；
+        # 删除整个资源时版本随之级联删除，提交时无悬挂引用，约束不会拦。
+        ForeignKeyConstraint(
+            ["current_revision_id", "id"],
+            ["resource_versions.id", "resource_versions.resource_id"],
+            name="fk_resources_current_revision_id_resource_versions",
+            ondelete="NO ACTION",
+            deferrable=True,
+            initially="DEFERRED",
+            use_alter=True,
+        ),
+        Index("ix_resources_owner_id_kind_created_at", "owner_id", "kind", "created_at"),
+        # 未删除且未归档资源的可用索引。
         Index(
-            "uq_resources_owner_id_slug",
+            "ix_resources_active_owner_id",
             "owner_id",
-            "slug",
-            unique=True,
-            postgresql_where=text("slug IS NOT NULL"),
+            postgresql_where=text("deleted_at IS NULL AND archived_at IS NULL"),
+        ),
+        # 到期清理索引只覆盖 expires_at IS NOT NULL。
+        Index(
+            "ix_resources_expires_at",
+            "expires_at",
+            postgresql_where=text("expires_at IS NOT NULL"),
         ),
     )
 
 
+class FileObject(UUIDPrimaryKey, Timestamped, Versioned, Deletable, Base):
+    """对象存储中的文件对象（可变生命周期记录）。
+
+    生命周期：``staged`` → ``ready``；删除时先转 ``pending_delete``，
+    物理删除成功后置 ``deleted_at``；失败保留 ``pending_delete`` 以待重试。
+
+    物理 I/O **不参与**数据库事务，因此状态推进由 ``storage.finalize`` /
+    ``storage.delete`` job 收敛（阶段 E5/H4）。
+    """
+
+    __tablename__ = "file_objects"
+
+    object_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    status: Mapped[FileObjectStatus] = mapped_column(
+        enum_column_type(FileObjectStatus, length=16),
+        nullable=False,
+        default=FileObjectStatus.STAGED,
+    )
+    sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    media_type: Mapped[str] = mapped_column(Text, nullable=False)
+    byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    storage_backend: Mapped[str] = mapped_column(String(32), nullable=False, default="local")
+
+    owner_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    resource_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("resources.id", ondelete="SET NULL"), nullable=True
+    )
+
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("object_key", name="uq_file_objects_object_key"),
+        CheckConstraint(enum_check_expression("status", FileObjectStatus), name="status_valid"),
+        CheckConstraint("length(object_key) > 0", name="object_key_not_empty"),
+        CheckConstraint("length(sha256) > 0", name="sha256_not_empty"),
+        CheckConstraint("byte_size >= 0", name="byte_size_non_negative"),
+        # ready 必须有定稿时刻；未 ready 不得有。
+        CheckConstraint(
+            "(status = 'ready') = (finalized_at IS NOT NULL)", name="finalized_at_matches_status"
+        ),
+        Index("ix_file_objects_status_created_at", "status", "created_at"),
+        Index("ix_file_objects_resource_id", "resource_id"),
+    )
+
+
 class ResourceVersion(UUIDPrimaryKey, Timestamped, Versioned, Base):
-    """不可变的内容版本。
+    """内容版本。**创建后不可编辑**，修订产生新版本。
 
-    设计要点：
+    标题、正文、URL、私密备注、标签都在**版本**上（接口契约的 ``RevisionDTO``
+    与 ``POST /api/resources`` 同样把它们作为原稿内容），而不是挂在资源主体上：
+    这样已发布版本不会被后续编辑影响。
 
-    - 编辑原稿**新增一行**，而不是改旧行——已发布版本必须保持不变
-      （v1 验收：更新私人原稿不改变已发布版本）。
-    - ``version_no`` 在同一资源内递增且唯一。
-    - ``content_hash`` 支持"内容没变就不新增版本"的判等（由 service 决定策略）。
-    - ``storage_key`` 指向对象存储；物理 I/O 永远不在数据库事务里。
+    "版本创建后不可修改"是 Repository/Service 的规则；数据库侧通过
+    "只暴露领域转换方法、不提供通用 update"来保证（阶段 B2）。
     """
 
     __tablename__ = "resource_versions"
@@ -156,38 +279,60 @@ class ResourceVersion(UUIDPrimaryKey, Timestamped, Versioned, Base):
     resource_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("resources.id", ondelete="CASCADE"), nullable=False
     )
-    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
-    content_format: Mapped[ContentFormat] = mapped_column(
-        enum_column_type(ContentFormat, length=16), nullable=False
-    )
-
-    body: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    body_hash: Mapped[str] = mapped_column(String(_HASH_LENGTH), nullable=False)
-
-    # 文件类资源的对象存储位置与元数据；网页/文章为 NULL。
-    storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    mime_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-
+    revision_no: Mapped[int] = mapped_column(Integer, nullable=False)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
-    resource: Mapped[Resource] = relationship(back_populates="versions", lazy="raise")
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_format: Mapped[ContentFormat] = mapped_column(
+        enum_column_type(ContentFormat, length=16),
+        nullable=False,
+        default=ContentFormat.MARKDOWN,
+    )
+    url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    private_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tags: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list, server_default=text("'{}'::text[]")
+    )
+    # 收藏关联网页资料；不因关联而继承公开权限。
+    linked_source_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("resources.id", ondelete="SET NULL"), nullable=True
+    )
+    # 网页元数据（original_url / final_url / fetched_at / content_hash / parser_version）。
+    source_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+    # 文件类版本的可选字段。
+    file_object_key: Mapped[str | None] = mapped_column(
+        String(512), ForeignKey("file_objects.object_key", ondelete="RESTRICT"), nullable=True
+    )
+    file_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    byte_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     __table_args__ = (
         UniqueConstraint(
-            "resource_id", "version_no", name="uq_resource_versions_resource_version_no"
+            "resource_id", "revision_no", name="uq_resource_versions_resource_revision"
         ),
+        # 供 resources.current_revision_id 与 publications 的复合引用。
+        UniqueConstraint("resource_id", "id", name="uq_resource_versions_resource_id_id"),
         CheckConstraint(
             enum_check_expression("content_format", ContentFormat), name="content_format_valid"
         ),
-        CheckConstraint("version_no >= 1", name="version_no_positive"),
-        CheckConstraint("size_bytes IS NULL OR size_bytes >= 0", name="size_bytes_non_negative"),
-        # 有对象存储位置就必须有 MIME 与大小：避免"半截上传"记录。
+        CheckConstraint("revision_no >= 1", name="revision_no_positive"),
+        CheckConstraint("byte_size IS NULL OR byte_size >= 0", name="byte_size_non_negative"),
+        # 网页元数据必须是对象，不允许塞入数组或标量。
         CheckConstraint(
-            "(storage_key IS NULL) = (mime_type IS NULL) AND (storage_key IS NULL) = (size_bytes IS NULL)",
-            name="storage_metadata_consistent",
+            "source_metadata IS NULL OR jsonb_typeof(source_metadata) = 'object'",
+            name="source_metadata_is_object",
+        ),
+        # 文件字段全有或全无：避免"半截上传"版本。
+        CheckConstraint(
+            "(file_object_key IS NULL) = (file_sha256 IS NULL) "
+            "AND (file_object_key IS NULL) = (media_type IS NULL) "
+            "AND (file_object_key IS NULL) = (byte_size IS NULL)",
+            name="file_metadata_consistent",
         ),
         Index("ix_resource_versions_resource_id_created_at", "resource_id", "created_at"),
     )
@@ -198,14 +343,15 @@ class Publication(UUIDPrimaryKey, Timestamped, Versioned, Base):
 
     设计要点：
 
-    - **一个资源只能有一个现行公开版本**：Partial Unique Index
-      ``resource_id WHERE revoked_at IS NULL``。重新发布必须先撤销旧行，
-      两步都在同一个事务里完成。
-    - ``public_no`` 是资源内递增的发布序号；由 Repository 在锁定 Resource 行后
-      计算 ``MAX()+1``（``publish_under_resource_lock``），行锁串行化它。
-    - ``payload`` 只保存**按类型白名单构造的公开字段**；
-      ``acl_version_at_publish`` 记录发布时的可见性版本，便于判定陈旧。
-    - ``revoked_at`` 一旦写入，公开读取立即阻断；索引与缓存清理交给异步 job。
+    - **一个资源只能有一个现行公开版本**：``UNIQUE(resource_id) WHERE revoked_at IS NULL``。
+    - ``public_fields`` 是白名单子集；**不在其中的字段，其列必须为空**，
+      由逐字段 CHECK 保证。这样"公开投影"不是靠 service 记得少填，
+      而是数据库不接受越界组合。
+    - ``(resource_id, revision_id)`` 复合外键绑定确切原稿版本；
+      ``UNIQUE(resource_id, revision_id, id)`` 供知识索引表严格引用。
+    - ``ai_enabled`` 决定这一版能否进入普通用户 AI 资料范围；
+      ``raw_download_enabled`` 表示**整个原件**可访问，发布前必须明确预览。
+    - 公开查询还要连接 resources，要求未归档、未删除。
     """
 
     __tablename__ = "publications"
@@ -213,274 +359,204 @@ class Publication(UUIDPrimaryKey, Timestamped, Versioned, Base):
     resource_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("resources.id", ondelete="CASCADE"), nullable=False
     )
-    resource_version_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("resource_versions.id", ondelete="RESTRICT"), nullable=False
+    # 单独的 revision 外键被下面的复合外键取代：只有复合外键能证明同属一个资源。
+    revision_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    publication_no: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    public_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    public_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    public_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    public_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    public_tags: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list, server_default=text("'{}'::text[]")
     )
-    # 发布时的资源内容版本：用于判断"公开内容对应哪一版原稿"。
-    resource_version: Mapped[int] = mapped_column(Integer, nullable=False)
-    # 发布时的可见性版本：与 resources.acl_version 对齐。
-    acl_version_at_publish: Mapped[int] = mapped_column(Integer, nullable=False)
+    public_fields: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list, server_default=text("'{}'::text[]")
+    )
 
-    public_no: Mapped[int] = mapped_column(Integer, nullable=False)
-    public_url: Mapped[str] = mapped_column(String(_URL_LENGTH), nullable=False)
-    # 公开投影：只含白名单字段，**不含** private_note。
-    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    ai_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    raw_download_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
-    published_by: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    published_by: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    published_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    revoked_reason: Mapped[PublicationRevokeReason | None] = mapped_column(
-        enum_column_type(PublicationRevokeReason, length=32), nullable=True
-    )
-
-    resource: Mapped[Resource] = relationship(back_populates="publications", lazy="raise")
 
     __table_args__ = (
-        # 单资源仅一个现行公开版本（Partial Unique Index）。
+        # 发布序号是**资源内**序号（"该资源第几次发布"），不是全局序号。
+        UniqueConstraint(
+            "resource_id", "publication_no", name="uq_publications_resource_publication"
+        ),
+        # 供 knowledge_indexes 严格引用（资源 + 版本 + publication）。
+        UniqueConstraint(
+            "resource_id", "revision_id", "id", name="uq_publications_resource_revision_id"
+        ),
+        # 单资源仅一个现行公开版本。
         Index(
             "uq_publications_resource_id_current",
             "resource_id",
             unique=True,
             postgresql_where=text("revoked_at IS NULL"),
         ),
-        UniqueConstraint("public_no", name="uq_publications_public_no"),
-        UniqueConstraint("public_url", name="uq_publications_public_url"),
-        CheckConstraint("public_no >= 1", name="public_no_positive"),
-        CheckConstraint("resource_version >= 1", name="resource_version_positive"),
-        CheckConstraint("acl_version_at_publish >= 0", name="acl_version_at_publish_non_negative"),
-        # 撤销原因只在已撤销时才有意义，反之亦然。
+        # 复合外键：revision 必须与 resource_id 同属一个资源。
+        ForeignKeyConstraint(
+            ["resource_id", "revision_id"],
+            ["resource_versions.resource_id", "resource_versions.id"],
+            name="fk_publications_resource_id_revision_id",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("publication_no >= 1", name="publication_no_positive"),
+        # public_fields 只能取白名单子集。
         CheckConstraint(
-            "(revoked_at IS NULL) = (revoked_reason IS NULL)",
-            name="revocation_marker_consistent",
+            f"public_fields <@ ARRAY[{_PUBLIC_FIELDS_LITERAL}]::text[]",
+            name="public_fields_whitelisted",
+        ),
+        # 不在 public_fields 中的字段，其列必须为空或空数组。
+        CheckConstraint(
+            "('title' = ANY(public_fields)) = (public_title IS NOT NULL)",
+            name="public_title_matches_fields",
         ),
         CheckConstraint(
-            enum_check_expression("revoked_reason", PublicationRevokeReason),
-            name="revoked_reason_valid",
+            "('body' = ANY(public_fields)) = (public_body IS NOT NULL)",
+            name="public_body_matches_fields",
         ),
-        Index("ix_publications_resource_id_published_at", "resource_id", "created_at"),
+        CheckConstraint(
+            "('note' = ANY(public_fields)) = (public_note IS NOT NULL)",
+            name="public_note_matches_fields",
+        ),
+        CheckConstraint(
+            "('url' = ANY(public_fields)) = (public_url IS NOT NULL)",
+            name="public_url_matches_fields",
+        ),
+        CheckConstraint(
+            "('tags' = ANY(public_fields)) = (cardinality(public_tags) > 0)",
+            name="public_tags_matches_fields",
+        ),
+        Index("ix_publications_resource_id_published_at", "resource_id", "published_at"),
     )
 
 
-class Comment(UUIDPrimaryKey, Timestamped, Versioned, SoftDelete, Base):
-    """评论。
+class Comment(UUIDPrimaryKey, Timestamped, Versioned, Deletable, Base):
+    """留言。
 
     设计要点：
 
-    - 幂等身份 ``(author_id, client_id)`` 唯一：同一客户端重复提交只产生一条。
-    - ``request_hash`` 是语义判等键：稳定 JSON 序列化的 SHA-256。
-      正文**只**统一 CRLF/CR 为 LF，不 strip、不折叠空白、不做 NFKC。
-    - 父评论约束是**跨行不变量**（父存在、父无 parent、resource_id 一致、父未删除）：
-      CHECK 不能跨行，普通 FK 只能保证父存在，因此由 Repository 在事务内锁定父行校验。
-      DB 侧只能靠 trigger，见 ``tests/integration`` 中的说明与 ``trg_comments_*`` 注释。
-    - ``status`` 与 ``deleted_at`` 分工：``hidden`` 是运营撤下，``deleted_at`` 是作者删除；
-      公开读取两者都要过滤。
+    - ``client_id`` 是 UUID，``UNIQUE(author_id, client_id)`` 用于提交去重；
+      同标识不同正文由 service 返回冲突。
+    - ``resource_id`` **可空**：为空表示独立留言板。
+    - 父子同资源用自引用复合外键保证；"首版只有一级回复"是服务规则。
+    - 修改已审核正文要重新进入 ``pending``（service 规则）。
+    - 公开读取要求 ``status='approved'`` 且未删除；文章留言还要求文章当前公开。
     """
 
     __tablename__ = "comments"
 
-    resource_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("resources.id", ondelete="CASCADE"), nullable=False
-    )
     author_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-    # 父评论：NULL 表示一级评论；子评论的父必须是同一资源下的一级评论。
+    resource_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("resources.id", ondelete="CASCADE"), nullable=True
+    )
     parent_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("comments.id", ondelete="CASCADE"), nullable=True
     )
-
-    # 客户端生成的幂等标识（同一作者内唯一）。
-    client_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    request_hash: Mapped[str] = mapped_column(String(_HASH_LENGTH), nullable=False)
+    client_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
 
     body: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[CommentStatus] = mapped_column(
-        enum_column_type(CommentStatus, length=16), nullable=False, default=CommentStatus.VISIBLE
+        enum_column_type(CommentStatus, length=16),
+        nullable=False,
+        default=CommentStatus.PENDING,
     )
-    # 运营撤下原因：主状态不因原因扩张。
-    moderation_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
-
-    resource: Mapped[Resource] = relationship(back_populates="comments", lazy="raise")
+    moderated_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    moderated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("author_id", "client_id", name="uq_comments_author_client"),
-        CheckConstraint("length(body) > 0", name="body_not_empty"),
+        # 供自引用复合外键使用。
+        UniqueConstraint("id", "resource_id", name="uq_comments_id_resource_id"),
         CheckConstraint(enum_check_expression("status", CommentStatus), name="status_valid"),
-        # 自己不能是自己的父评论。
+        CheckConstraint("length(body) > 0", name="body_not_empty"),
         CheckConstraint("parent_id IS NULL OR parent_id <> id", name="parent_not_self"),
-        Index("ix_comments_resource_id_created_at", "resource_id", "created_at"),
-        Index("ix_comments_parent_id_created_at", "parent_id", "created_at"),
+        # 跨行约束：父留言必须与本条属于同一资源。
+        # MATCH SIMPLE：``resource_id`` 为空的留言板回复不受校验。
+        ForeignKeyConstraint(
+            ["parent_id", "resource_id"],
+            ["comments.id", "comments.resource_id"],
+            name="fk_comments_parent_id_resource_id",
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_comments_resource_id_status_created_at",
+            "resource_id",
+            "status",
+            "created_at",
+            "id",
+        ),
         Index("ix_comments_author_id_created_at", "author_id", "created_at"),
+        Index("ix_comments_parent_id", "parent_id"),
     )
 
 
-class KnowledgeIndex(UUIDPrimaryKey, Timestamped, Base):
-    """检索索引片段（pgvector，1024 维）。
+class Report(UUIDPrimaryKey, Timestamped, Versioned, Base):
+    """留言举报。
 
     设计要点：
 
-    - **私人版本与公开 publication 分别建索引**，且用 CHECK 把
-      ``corpus_kind`` / ``source_kind`` 与具体外键列绑死：
-
-      * ``private`` 必须 ``source_kind='resource_version'`` 且 ``publication_id IS NULL``
-      * ``public``  必须 ``source_kind='publication'``   且 ``resource_version_id IS NULL``
-
-      于是"复用私人 chunk 再加 public 标记"在结构上**无法表达**
-      （架构文档 §9.2：公开索引只能从公开投影生成）。
-    - ``superseded_at`` 标记被新索引取代；检索只使用 ``superseded_at IS NULL`` 的片段。
-    - 向量索引用 HNSW + cosine，且带同样的可见性谓词，避免 ANN 越过权限边界。
+    - 每个用户对同一留言最多一条**未处理**举报：部分唯一索引
+      ``(reporter_id, comment_id) WHERE status='open'``。
+    - 普通用户只能报告已公开或自己可见的留言，不能枚举私密评论（service 规则）。
     """
 
-    __tablename__ = "knowledge_indexes"
+    __tablename__ = "reports"
 
-    owner_id: Mapped[uuid.UUID] = mapped_column(
+    reporter_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-    resource_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("resources.id", ondelete="CASCADE"), nullable=False
+    comment_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("comments.id", ondelete="CASCADE"), nullable=False
     )
-
-    corpus_kind: Mapped[IndexKind] = mapped_column(
-        enum_column_type(IndexKind, length=16), nullable=False
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[ReportStatus] = mapped_column(
+        enum_column_type(ReportStatus, length=16), nullable=False, default=ReportStatus.OPEN
     )
-    source_kind: Mapped[IndexSourceKind] = mapped_column(
-        enum_column_type(IndexSourceKind, length=32), nullable=False
+    handled_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    # 私人来源：指向内容版本。
-    resource_version_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("resource_versions.id", ondelete="CASCADE"), nullable=True
-    )
-    # 公开发布来源：指向公开投影。
-    publication_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("publications.id", ondelete="CASCADE"), nullable=True
-    )
-
-    chunk_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), nullable=False, default=uuid.uuid4
-    )
-    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    fragment_start: Mapped[int] = mapped_column(Integer, nullable=False)
-    fragment_end: Mapped[int] = mapped_column(Integer, nullable=False)
-
-    # 列名就叫 text；类体内的这个属性会遮蔽 sqlalchemy.text，
-    # 因此本类的索引谓词一律用 sa.text(...) 构造（见 __table_args__）。
-    text: Mapped[str] = mapped_column(Text, nullable=False)
-    text_hash: Mapped[str] = mapped_column(String(_HASH_LENGTH), nullable=False)
-    token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
-    embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIMENSIONS), nullable=False)
-    embedding_model: Mapped[str] = mapped_column(String(128), nullable=False)
-    embedding_dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
-
-    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        CheckConstraint(enum_check_expression("corpus_kind", IndexKind), name="corpus_kind_valid"),
-        CheckConstraint(
-            enum_check_expression("source_kind", IndexSourceKind), name="source_kind_valid"
-        ),
-        # 公开索引只能来自公开投影，私人索引只能来自私人版本。
-        CheckConstraint(
-            "(corpus_kind = 'private' AND source_kind = 'resource_version' "
-            "AND resource_version_id IS NOT NULL AND publication_id IS NULL) "
-            "OR (corpus_kind = 'public' AND source_kind = 'publication' "
-            "AND publication_id IS NOT NULL AND resource_version_id IS NULL)",
-            name="corpus_source_consistent",
-        ),
-        CheckConstraint(
-            f"embedding_dimensions = {EMBEDDING_DIMENSIONS}",
-            name="embedding_dimensions_matches_column",
-        ),
-        CheckConstraint("chunk_index >= 0", name="chunk_index_non_negative"),
-        CheckConstraint("fragment_start >= 0", name="fragment_start_non_negative"),
-        CheckConstraint("fragment_end > fragment_start", name="fragment_range_ordered"),
-        UniqueConstraint(
-            "corpus_kind",
-            "resource_id",
-            "chunk_id",
-            name="uq_knowledge_indexes_corpus_resource_chunk",
-        ),
-        Index("ix_knowledge_indexes_resource_id_corpus_kind", "resource_id", "corpus_kind"),
-        Index("ix_knowledge_indexes_chunk_id", "chunk_id"),
-        Index("ix_knowledge_indexes_owner_id_corpus_kind", "owner_id", "corpus_kind"),
-        # ANN 索引刻意带可见性谓词：检索永远不会越过 superseded_at 边界。
-        # 这里必须用 sa.text(...)：本类体已用名为 text 的列属性遮蔽了 sqlalchemy.text。
         Index(
-            KNOWLEDGE_INDEX_VECTOR_INDEX,
-            "embedding",
-            postgresql_using="hnsw",
-            postgresql_with={"m": 16, "ef_construction": 64},
-            postgresql_ops={"embedding": "vector_cosine_ops"},
-            postgresql_where=sa.text("superseded_at IS NULL"),
+            "uq_reports_reporter_id_comment_id_open",
+            "reporter_id",
+            "comment_id",
+            unique=True,
+            postgresql_where=text("status = 'open'"),
         ),
-    )
-
-
-class RunSource(UUIDPrimaryKey, Timestamped, Base):
-    """实际进入模型的来源记录。
-
-    设计要点：
-
-    - **AppendOnly 语义**：Repository 只暴露 ``record()``，不提供通用 update/delete。
-    - 绑定 revision/publication/acl_version/片段位置，使"这次回答依据了哪些资料"
-      可被审计复现（架构文档 §9.2）。
-    - ``cited`` 标记是否在回答中被引用；``grounding`` 标记是私人语料还是公开语料。
-    - ``run_id`` 指向 ``runs``（A6 建立该表）。同一次 run 的同一片段只记录一次。
-    """
-
-    __tablename__ = "run_sources"
-
-    run_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False
-    )
-
-    grounding: Mapped[RunSourceKind] = mapped_column(
-        enum_column_type(RunSourceKind, length=16), nullable=False
-    )
-    resource_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("resources.id", ondelete="SET NULL"), nullable=True
-    )
-    resource_version_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("resource_versions.id", ondelete="SET NULL"), nullable=True
-    )
-    publication_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("publications.id", ondelete="SET NULL"), nullable=True
-    )
-
-    # 来源记录必须绑定当时的可见性版本，便于判断 ACL 是否已变化。
-    acl_version: Mapped[int] = mapped_column(Integer, nullable=False)
-    # 引用的索引片段：与 knowledge_indexes.chunk_id 对应。
-    chunk_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
-    fragment_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    fragment_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
-    score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    cited: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    # 检索/重排的模型与参数版本，便于复现。
-    retrieval_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    # 名为 metadata_json：ORM 的 ``metadata`` 属性已被 SQLAlchemy 占用。
-    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-
-    __table_args__ = (
-        CheckConstraint(enum_check_expression("grounding", RunSourceKind), name="grounding_valid"),
-        # 来源必须且只能指向一类语料：私人版本或公开投影。
+        CheckConstraint(enum_check_expression("status", ReportStatus), name="status_valid"),
+        CheckConstraint("length(reason) > 0", name="reason_not_empty"),
+        # open 时没有处理时刻；已处理（resolved/dismissed）必须有。
         CheckConstraint(
-            "(grounding = 'private' AND publication_id IS NULL) "
-            "OR (grounding = 'public' AND resource_version_id IS NULL)",
-            name="grounding_target_consistent",
+            "(status = 'open') = (resolved_at IS NULL)", name="resolved_at_matches_status"
         ),
-        CheckConstraint("acl_version >= 0", name="acl_version_non_negative"),
-        CheckConstraint(
-            "(fragment_start IS NULL) = (fragment_end IS NULL)",
-            name="fragment_markers_consistent",
-        ),
-        CheckConstraint(
-            "fragment_end IS NULL OR fragment_end > fragment_start",
-            name="fragment_range_ordered",
-        ),
-        # 同一 run 内同一切片只记录一次。
-        UniqueConstraint("run_id", "chunk_id", name="uq_run_sources_run_chunk"),
-        Index("ix_run_sources_run_id", "run_id"),
-        Index("ix_run_sources_resource_id", "resource_id"),
+        Index("ix_reports_status_created_at", "status", "created_at"),
+        Index("ix_reports_comment_id", "comment_id"),
     )
+
+
+__all__ = [
+    "PUBLIC_FIELD_NAMES",
+    "Comment",
+    "FileObject",
+    "Publication",
+    "Report",
+    "Resource",
+    "ResourceVersion",
+    "RetentionPolicy",
+]

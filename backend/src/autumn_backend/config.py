@@ -30,9 +30,16 @@ class Environment(enum.StrEnum):
     PROD = "prod"
 
 
-# 非生产环境使用的占位密钥；只用于本地开发，长度足够但不可用于生产。
+# 非生产环境使用的占位密钥；只用于本地开发。
+# 生产环境会**按值拒绝**这两个常量，并且要求调用方显式提供密钥——
+# 仅检查长度是不够的，因为它们本身已经超过 32 字符。
 _DEV_SESSION_SECRET = "dev-only-session-secret-do-not-use-in-production"
 _DEV_CSRF_SECRET = "dev-only-csrf-secret-do-not-use-in-production"
+
+#: 生产环境必须显式提供、且不得等于这两个占位值的密钥字段。
+_REQUIRED_IN_PRODUCTION = ("session_secret", "csrf_secret")
+
+_PLACEHOLDER_SECRETS = frozenset({_DEV_SESSION_SECRET, _DEV_CSRF_SECRET})
 
 
 class Settings(BaseSettings):
@@ -103,15 +110,39 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _enforce_production_invariants(self) -> Settings:
         if self.environment is Environment.PROD:
-            if len(self.session_secret.get_secret_value()) < 32:
-                raise ValueError("生产环境 AUTUMN_SESSION_SECRET 至少需要 32 字符")
-            if len(self.csrf_secret.get_secret_value()) < 32:
-                raise ValueError("生产环境 AUTUMN_CSRF_SECRET 至少需要 32 字符")
+            self._require_explicit_production_secrets()
             if not self.cookie_secure:
                 raise ValueError("生产环境必须启用 Secure Cookie")
             if not self.cookie_name.startswith("__Host-"):
                 raise ValueError("生产环境会话 Cookie 必须使用 __Host- 前缀")
         return self
+
+    def _require_explicit_production_secrets(self) -> None:
+        """生产环境必须**显式**提供密钥，且不得使用开发占位值。
+
+        两条规则缺一不可：
+
+        1. 字段必须出现在 ``model_fields_set`` 里——否则用的是代码内默认值。
+           只比较长度会漏掉它，因为开发默认值本身就超过 32 字符。
+        2. 值不得等于开发占位常量——显式传入占位值同样不可接受。
+
+        错误信息只包含变量名，绝不回显密钥内容（可能被日志收走）。
+        """
+        env_names = {
+            "session_secret": "AUTUMN_SESSION_SECRET",
+            "csrf_secret": "AUTUMN_CSRF_SECRET",
+        }
+        for field_name in _REQUIRED_IN_PRODUCTION:
+            env_name = env_names[field_name]
+            provided = field_name in self.model_fields_set
+            value = getattr(self, field_name).get_secret_value()
+
+            if not provided:
+                raise ValueError(f"生产环境必须显式提供 {env_name}；不接受代码内的开发默认值")
+            if value in _PLACEHOLDER_SECRETS:
+                raise ValueError(f"生产环境不得使用开发占位密钥：{env_name}")
+            if len(value) < 32:
+                raise ValueError(f"生产环境 {env_name} 至少需要 32 字符")
 
     # ------------------------------------------------------------ 便捷属性 --
     @property

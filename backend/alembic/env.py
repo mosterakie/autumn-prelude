@@ -17,6 +17,7 @@ from sqlalchemy import Connection, pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from autumn_backend.config import get_settings
+from autumn_backend.db import external_tables
 from autumn_backend.db.base import Base
 from autumn_backend.db.models import load_all_models
 
@@ -27,12 +28,18 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # 目标元数据：全部模型的统一 Metadata。
+# 注册入口是 ``autumn_backend.db.models`` 包的导入副作用，见该包的说明。
 load_all_models()
 target_metadata = Base.metadata
 
 # URL 只从应用配置注入（alembic.ini 中的 sqlalchemy.url 保持为空）。
 _settings = get_settings()
 config.set_main_option("sqlalchemy.url", _settings.async_database_url)
+
+
+#: 允许存在于数据库中但不属于应用模型的外部表，按 ``(schema, table)`` 登记。
+#: 定义放在应用包里，迁移运行器与 catalog 核对测试引用同一份政策。
+EXTERNAL_TABLE_ALLOWLIST = external_tables.EXTERNAL_TABLE_ALLOWLIST
 
 
 def _include_object(
@@ -42,10 +49,16 @@ def _include_object(
     reflected: bool,
     compare_to: object | None,
 ) -> bool:
-    """排除非应用对象，避免 autogenerate 试图删除外部扩展建立的表。"""
+    """只排除**显式登记**的外部表；其余全部纳入比较。
+
+    注意：``CHECK`` 约束表达式与触发器**不在** autogenerate 的比较范围内
+    （见 Alembic 文档 "What does autogenerate detect"）。因此本函数只保证
+    "表/列/索引/唯一约束/外键"这一层不漂移；CHECK 语义与触发器是否生效，
+    必须靠集成测试与 catalog 核对另行证明。
+    """
     if type_ == "table" and reflected and compare_to is None:
-        # 例如 pgvector / LangGraph checkpoint 在库中留下的表。
-        return False
+        schema = getattr(obj, "schema", None) or "public"
+        return (schema, name or "") in EXTERNAL_TABLE_ALLOWLIST
     return True
 
 

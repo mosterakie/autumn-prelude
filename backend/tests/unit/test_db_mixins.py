@@ -11,11 +11,11 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     Column,
     DateTime,
     Index,
-    Integer,
     MetaData,
     PrimaryKeyConstraint,
     Table,
@@ -119,7 +119,8 @@ class TestVersioned:
         assert "acl_version" not in columns
 
         version = FullStack.__table__.c.version
-        assert isinstance(version.type, Integer)
+        # 文档 §1：可变对象用 bigint version，不是 integer。
+        assert isinstance(version.type, BigInteger)
         assert version.nullable is False
         # 不用 server_default：避免"0 与 NULL"两套语义并存。
         assert version.server_default is None

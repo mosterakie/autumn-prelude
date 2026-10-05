@@ -26,15 +26,17 @@ coverage/
 *.tsbuildinfo
 
 # Private content and runtime data
-data/
-uploads/
-storage/
-logs/
+# 注意：这些模式必须锚定到仓库根，否则会吞掉同名的 Python 包——
+# `storage/` 曾误忽略 src/autumn_backend/storage/，导致该包没进提交。
+/data/
+/uploads/
+/storage/
+/logs/
 *.log
 *.sqlite
 *.sqlite3
 *.db
-backups/
+/backups/
 
 # Local editors and OS
 .vscode/
