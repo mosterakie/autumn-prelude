@@ -16,9 +16,11 @@ from autumn_backend.repositories.identity import (
 )
 from autumn_backend.repositories.jobs import JobRepository
 from autumn_backend.repositories.memories import MemoryRepository
+from autumn_backend.repositories.messages import MessageRepository
 from autumn_backend.repositories.provider_calls import ProviderCallRepository
 from autumn_backend.repositories.publications import PublicationRepository
 from autumn_backend.repositories.quota import QuotaBucketRepository, QuotaReservationRepository
+from autumn_backend.repositories.rate_limits import RateLimitRepository
 from autumn_backend.repositories.resources import ResourceRepository
 from autumn_backend.repositories.runs import RunEventRepository, RunRepository
 
@@ -41,6 +43,8 @@ class Repositories:
     conversations: ConversationRepository
     memories: MemoryRepository
     audit_events: AuditEventRepository
+    messages: MessageRepository
+    rate_limits: RateLimitRepository
 
     @classmethod
     def bind(cls, session: AsyncSession, access_guard: Callable[[], None]) -> "Repositories":
@@ -61,4 +65,6 @@ class Repositories:
             conversations=ConversationRepository(session, access_guard=access_guard),
             memories=MemoryRepository(session, access_guard=access_guard),
             audit_events=AuditEventRepository(session, access_guard=access_guard),
+            messages=MessageRepository(session, access_guard=access_guard),
+            rate_limits=RateLimitRepository(session, access_guard=access_guard),
         )

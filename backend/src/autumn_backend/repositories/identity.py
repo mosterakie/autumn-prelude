@@ -29,7 +29,11 @@ class AuthSessionRepository(UUIDRepository[AuthSession]):
 
 class SettingRepository(RepositoryBase):
     async def get(self, key: str) -> Setting | None:
-        return await self.session.get(Setting, key)
+        return (
+            await self.session.execute(
+                select(Setting).where(Setting.key == key).execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
 
     async def _acl_setting(self, *, lock: bool = False) -> Setting:
         statement = select(Setting).where(Setting.key == "content_acl_epoch")

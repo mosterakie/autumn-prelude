@@ -16,6 +16,18 @@ class ConversationRepository(VersionedRepository[Conversation]):
     model = Conversation
     mutable_fields = frozenset({"title", "deleted_at"})
 
+    async def for_user_for_update(
+        self, conversation_id: UUID, user_id: UUID
+    ) -> Conversation | None:
+        return (
+            await self.session.execute(
+                select(Conversation)
+                .where(Conversation.id == conversation_id, Conversation.user_id == user_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+
     async def for_user(
         self, user_id: UUID, *, limit: int = 20, cursor: str | None = None
     ) -> Page[Conversation]:

@@ -9,14 +9,15 @@
 
 实施顺序见《秋序_v1.0_功能点实施顺序》与《v1.1 评审修订建议》。
 
-当前进度：**A1–A7、B1–B12、C 核心/已实现模块并发回归、D 纯权限与 E1 发布服务完成**。
+当前进度：**A1–A7、B1–B12、C 核心/已实现模块并发回归、D 纯权限、E1 发布与 E2 问答受理完成**。
 **28 张表**、4 个基线迁移 + B8 留言请求身份增量迁移；空库 base→head、
 存量留言升级、`alembic check`、Catalog 与真实并发验收通过。
 节点、验证结果与后续边界见 [DEVELOPMENT.md](DEVELOPMENT.md)。
 数据契约的存储归属、枚举映射与有意偏离见 [DATA_CONTRACT.md](DATA_CONTRACT.md)。
 身份入口、角色矩阵与来源/上下文失效契约见 [POLICY_CONTRACT.md](POLICY_CONTRACT.md)。
 明确请求的发布/撤回事务见 [PUBLICATION_SERVICE.md](PUBLICATION_SERVICE.md)。
-E2 起的其它服务、HTTP 认证、Agent 与 Worker 的实际入口和执行尚待实现。
+问答受理、角色限额、重试和固定额度桶见 [RUN_SERVICE.md](RUN_SERVICE.md)。
+E3 起的其它服务、HTTP 认证、Agent 与 Worker 的实际入口和执行尚待实现。
 
 ### 阶段 A 验收与评审修复
 
@@ -320,7 +321,7 @@ status NOT IN ('ready', 'running', 'succeeded') OR confirmed_at IS NOT NULL
   未设置时这些用例显式 skip，而不是退化成假通过。
 
 ```powershell
-$env:AUTUMN_TEST_DATABASE_URL = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5442/autumn"
+$env:AUTUMN_TEST_DATABASE_URL = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5442/autumn_test_example"
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
