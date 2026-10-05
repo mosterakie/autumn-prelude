@@ -9,6 +9,7 @@ UoW 原则（架构文档 §4.1 / Repository 文档 §4）：
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from types import TracebackType
 from typing import Self
@@ -22,6 +23,7 @@ from sqlalchemy.ext.asyncio import (
 
 from autumn_backend.config import Settings, get_settings
 from autumn_backend.observability.logging import get_logger
+from autumn_backend.repositories.bundle import Repositories
 
 logger = get_logger(__name__)
 
@@ -63,18 +65,31 @@ class UnitOfWork:
         async with uow_factory() as uow:
             ...  # 无异常 -> commit；有异常 -> rollback
 
-    构造 Repository 的职责落在阶段 B1 的具体 UoW 子类上；
-    本类只保证事务边界、回滚语义与统一释放会话。
+    进入时显式开启事务，并绑定所有 Repository。实例只可进入一次，
+    且只能由进入它的 asyncio Task 使用；工厂可跨 Task 共享。
     """
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
         self._session: AsyncSession | None = None
         self._finished = False
+        self._entered = False
+        self._owner_task: asyncio.Task[object] | None = None
+        self._repositories: Repositories | None = None
 
     # ------------------------------------------------------------- 生命周期 --
     async def __aenter__(self) -> Self:
+        if self._entered:
+            raise RuntimeError("UnitOfWork 不可重复进入；请从工厂创建新实例")
+        self._entered = True
+        self._owner_task = asyncio.current_task()
         self._session = self._session_factory()
+        try:
+            await self._session.begin()
+            self._repositories = Repositories.bind(self._session, self._assert_active)
+        except BaseException:
+            await self.close()
+            raise
         return self
 
     async def __aexit__(
@@ -87,7 +102,11 @@ class UnitOfWork:
             if exc_type is not None:
                 await self.rollback()
             else:
-                await self.commit()
+                try:
+                    await self.commit()
+                except BaseException:
+                    await self.rollback()
+                    raise
         finally:
             await self.close()
 
@@ -95,9 +114,24 @@ class UnitOfWork:
     @property
     def session(self) -> AsyncSession:
         """当前事务的会话。UoW 之外的访问是编程错误，直接失败。"""
-        if self._session is None:
-            raise RuntimeError("UnitOfWork 尚未进入；请使用 `async with uow_factory() as uow:`")
+        self._assert_active()
+        assert self._session is not None
         return self._session
+
+    @property
+    def repositories(self) -> Repositories:
+        self._assert_active()
+        assert self._repositories is not None
+        return self._repositories
+
+    def _assert_owner(self) -> None:
+        if self._owner_task is not asyncio.current_task():
+            raise RuntimeError("UnitOfWork 不可跨并发 Task 共享")
+
+    def _assert_active(self) -> None:
+        self._assert_owner()
+        if self._session is None or self._finished:
+            raise RuntimeError("UnitOfWork 的事务未开启或已经结束")
 
     @property
     def finished(self) -> bool:
@@ -105,21 +139,26 @@ class UnitOfWork:
         return self._finished
 
     async def commit(self) -> None:
+        self._assert_owner()
         if self._session is None or self._finished:
             return
         await self._session.commit()
         self._finished = True
 
     async def rollback(self) -> None:
+        self._assert_owner()
         if self._session is None or self._finished:
             return
         await self._session.rollback()
         self._finished = True
 
     async def close(self) -> None:
+        self._assert_owner()
         if self._session is not None:
             await self._session.close()
             self._session = None
+            self._repositories = None
+            self._finished = True
 
 
 class UnitOfWorkFactory:
