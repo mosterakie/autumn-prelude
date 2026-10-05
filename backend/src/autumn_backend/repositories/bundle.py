@@ -6,16 +6,21 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autumn_backend.repositories.identity import SettingRepository, UserRepository
+from autumn_backend.repositories.runs import RunEventRepository, RunRepository
 
 
 @dataclass(frozen=True, slots=True)
 class Repositories:
     users: UserRepository
     settings: SettingRepository
+    runs: RunRepository
+    run_events: RunEventRepository
 
     @classmethod
     def bind(cls, session: AsyncSession, access_guard: Callable[[], None]) -> "Repositories":
         return cls(
             users=UserRepository(session, access_guard=access_guard),
             settings=SettingRepository(session, access_guard=access_guard),
+            runs=RunRepository(session, access_guard=access_guard),
+            run_events=RunEventRepository(session, access_guard=access_guard),
         )
