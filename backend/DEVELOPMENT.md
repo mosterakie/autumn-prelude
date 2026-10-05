@@ -11,6 +11,7 @@
 | B4 Run / RunEvent | 完成 | 定向 ON CONFLICT 幂等受理、哈希冲突、会话忙错误；事件原子分配序号和有界回放 |
 | B5 额度预留与结算 | 完成 | 首次桶 UPSERT 后加锁；预留按 run 去重；扣次/释放/退款单调幂等；动态限额，超额必须回滚整个事务 |
 | B6 最小持久队列 | 完成 | 幂等 enqueue、SKIP LOCKED 领取、数据库时钟租约、heartbeat/finish 校验有效 token；回收与业务 handler 留在 H |
+| B7 外部调用账本 | 完成 | prepared→dispatched→终态 CAS；稳定逻辑身份和外部幂等键；unknown 保留未知费用，后续对账承接 |
 
 Repository 只执行事务内的数据库操作，不自行提交。不在数据库事务内执行外部模型、搜索、邮件或对象存储 I/O。
 UoW 工厂可并发共享，实例不可共享或复用。显式 commit/rollback 后应退出当前上下文并创建新 UoW。
