@@ -3,9 +3,11 @@ from datetime import timedelta
 from uuid import uuid4
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
+from autumn_backend.app import create_app
 from autumn_backend.auth.security import AuthError, token_hash, totp
 from autumn_backend.auth.service import AuthService
 from autumn_backend.config import Environment, Settings
@@ -212,3 +214,124 @@ async def test_failed_login_keeps_rate_evidence_and_invalid_token_does_not_modif
                 .where(AuthToken.consumed_at.is_not(None))
             )
         ).scalar_one() == 0
+
+
+async def test_auth_routes_cookie_csrf_origin_and_uniform_registration(
+    auth_service: AuthService,
+) -> None:
+    app = create_app(auth_service.settings)
+    app.state.auth = auth_service
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        assert (await client.get("/api/auth/me")).json()["data"]["user"] is None
+        email = f"api-{uuid4().hex}@example.com"
+        body = {"email": email, "password": PASSWORD, "display_name": "访客"}
+        assert (await client.post("/api/auth/register", json=body)).status_code == 403
+        origin = {"Origin": "http://localhost:3000"}
+        first = await client.post("/api/auth/register", json=body, headers=origin)
+        duplicate = await client.post("/api/auth/register", json=body, headers=origin)
+        assert first.status_code == duplicate.status_code == 202
+        assert first.json()["data"] == duplicate.json()["data"] == {"accepted": True}
+        injected = await client.post(
+            "/api/auth/register", json={**body, "role": "owner"}, headers=origin
+        )
+        assert injected.status_code == 422 and PASSWORD not in injected.text
+        raw, _ = await mail_token(auth_service, AuthTokenPurpose.VERIFY_EMAIL)
+        verified = await client.post("/api/auth/verify-email", json={"token": raw}, headers=origin)
+        assert verified.status_code == 200
+        login = await client.post(
+            "/api/auth/login", json={"email": email, "password": PASSWORD}, headers=origin
+        )
+        assert login.status_code == 200
+        assert (
+            "HttpOnly" in login.headers["set-cookie"]
+            and "SameSite=lax" in login.headers["set-cookie"]
+        )
+        assert (
+            "Path=/" in login.headers["set-cookie"] and "Domain=" not in login.headers["set-cookie"]
+        )
+        assert login.headers["cache-control"] == "no-store"
+        assert login.json()["data"]["server_time"].endswith("Z")
+        assert "password_hash" not in login.text and raw not in login.text
+        csrf = login.json()["data"]["csrf_token"]
+        assert (await client.post("/api/auth/logout", headers=origin)).status_code == 403
+        assert (
+            await client.post(
+                "/api/auth/logout", headers={"Origin": "https://evil.example", "X-CSRF-Token": csrf}
+            )
+        ).status_code == 403
+        me = await client.get("/api/auth/me")
+        assert me.json()["data"]["user"]["email"] == email
+        logout = await client.post("/api/auth/logout", headers={**origin, "X-CSRF-Token": csrf})
+        assert logout.status_code == 204
+        assert (await client.get("/api/auth/me")).json()["data"]["user"] is None
+
+
+async def test_http_step_up_rotates_cookie_and_csrf(auth_service: AuthService) -> None:
+    service = auth_service
+    async with service.uows() as uow:
+        now = await uow.repositories.users.database_time()
+    email, secret = f"api-owner-{uuid4().hex}@example.com", service.new_totp_secret()
+    recovery = await service.bootstrap_owner(
+        email=email,
+        password=PASSWORD,
+        display_name="站长",
+        totp_secret=secret,
+        code=totp(secret, int(now.timestamp()) // 30),
+    )
+    app = create_app(service.settings)
+    app.state.auth = service
+    origin = {"Origin": "http://localhost:3000"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        login = await client.post(
+            "/api/auth/login", json={"email": email, "password": PASSWORD}, headers=origin
+        )
+        old = client.cookies.get("autumn_session")
+        assert login.json()["data"]["user"]["step_up_expires_at"] is None
+        csrf = login.json()["data"]["csrf_token"]
+        upgraded = await client.post(
+            "/api/auth/step-up",
+            json={"recovery_code": recovery[0]},
+            headers={**origin, "X-CSRF-Token": csrf},
+        )
+        assert upgraded.status_code == 200 and client.cookies.get("autumn_session") != old
+        assert upgraded.json()["data"]["csrf_token"] != csrf
+        assert "search_web" in upgraded.json()["data"]["user"]["capabilities"]
+        assert secret not in upgraded.text and recovery[0] not in upgraded.text
+        client.cookies.clear()
+        client.cookies.set("autumn_session", old)
+        expired = await client.get("/api/auth/me")
+        assert expired.json()["data"]["user"] is None
+        assert "Max-Age=0" in expired.headers["set-cookie"]
+
+
+async def test_cors_and_two_browser_sessions_remain_independent(auth_service: AuthService) -> None:
+    app = create_app(auth_service.settings)
+    app.state.auth = auth_service
+    first_email, second_email = await register(auth_service), await register(auth_service)
+    origin = {"Origin": "http://localhost:3000"}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as first:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as second:
+            for client, email in ((first, first_email), (second, second_email)):
+                login = await client.post(
+                    "/api/auth/login", json={"email": email, "password": PASSWORD}, headers=origin
+                )
+                assert login.status_code == 200
+                assert login.headers["access-control-allow-origin"] == origin["Origin"]
+            assert (await first.get("/api/auth/me")).json()["data"]["user"]["email"] == first_email
+            assert (await second.get("/api/auth/me")).json()["data"]["user"][
+                "email"
+            ] == second_email
+            allowed = await first.options(
+                "/api/auth/login",
+                headers={
+                    **origin,
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "content-type,x-csrf-token",
+                },
+            )
+            assert allowed.status_code == 200
+            denied = await first.options(
+                "/api/auth/login",
+                headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "POST"},
+            )
+            assert denied.status_code == 400

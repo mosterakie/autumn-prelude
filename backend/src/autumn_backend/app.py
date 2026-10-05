@@ -17,12 +17,15 @@ from typing import Any
 
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine
+from starlette.middleware.cors import CORSMiddleware
 
 from autumn_backend import __version__
+from autumn_backend.api.auth import router as auth_router
 from autumn_backend.api.errors import install_error_handlers
 from autumn_backend.api.middleware import install_request_middleware
+from autumn_backend.auth.service import AuthService
 from autumn_backend.config import Settings, get_settings
-from autumn_backend.db.session import create_engine, create_session_factory
+from autumn_backend.db.session import UnitOfWorkFactory, create_engine, create_session_factory
 from autumn_backend.observability.logging import configure_logging, get_logger
 
 logger = get_logger(__name__)
@@ -35,11 +38,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging(settings)
 
     engine: AsyncEngine | None = None
-    # 本地开发与单元测试不强制要求数据库可达；生产必须连上才算启动成功。
-    if settings.is_production or settings.environment.value == "dev":
+    # Engine 延迟连接；测试通过独立 UoW 注入，永不连接默认业务数据库。
+    if not settings.is_test:
         engine = create_engine(settings)
         app.state.engine = engine
         app.state.session_factory = create_session_factory(engine)
+        app.state.uows = UnitOfWorkFactory(app.state.session_factory)
+        app.state.auth = AuthService(app.state.uows, settings)
 
     logger.info(
         "app.startup",
@@ -68,8 +73,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = resolved
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(resolved.trusted_origins),
+        allow_credentials=True,
+        allow_methods=["GET", "HEAD", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "X-CSRF-Token", "Idempotency-Key", "Last-Event-ID"],
+        expose_headers=["X-Request-ID", "Retry-After"],
+    )
     install_error_handlers(app)
     install_request_middleware(app)
+    app.include_router(auth_router)
 
     @app.get("/healthz", tags=["health"], summary="存活探针")
     async def healthz() -> dict[str, str]:

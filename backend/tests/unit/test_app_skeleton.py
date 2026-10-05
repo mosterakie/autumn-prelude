@@ -52,6 +52,8 @@ class TestSettings:
             "environment": Environment.PROD,
             "session_secret": "s" * 40,
             "csrf_secret": "c" * 40,
+            "auth_encryption_key": "e" * 40,
+            "trusted_origins": ("https://autumn.example",),
             "cookie_secure": True,
             "cookie_name": "__Host-autumn_session",
         }
@@ -65,6 +67,8 @@ class TestSettings:
             environment=Environment.PROD,
             session_secret="s" * 40,
             csrf_secret="c" * 40,
+            auth_encryption_key="e" * 40,
+            trusted_origins=("https://autumn.example",),
             cookie_secure=True,
             cookie_name="__Host-autumn_session",
         )

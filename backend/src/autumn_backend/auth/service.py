@@ -245,6 +245,29 @@ class AuthService:
                 return
             await self._issue(uow, user, purpose)
 
+    async def resend_verification(self, *, email: str, remote_address: str) -> None:
+        await self.request_email(
+            email=email, purpose=AuthTokenPurpose.VERIFY_EMAIL, remote_address=remote_address
+        )
+
+    async def forgot_password(self, *, email: str, remote_address: str) -> None:
+        await self.request_email(
+            email=email, purpose=AuthTokenPurpose.RESET_PASSWORD, remote_address=remote_address
+        )
+
+    async def verify_email(self, *, raw: str, remote_address: str) -> None:
+        await self.consume_token(
+            raw=raw, purpose=AuthTokenPurpose.VERIFY_EMAIL, remote_address=remote_address
+        )
+
+    async def reset_password(self, *, raw: str, new_password: str, remote_address: str) -> None:
+        await self.consume_token(
+            raw=raw,
+            purpose=AuthTokenPurpose.RESET_PASSWORD,
+            remote_address=remote_address,
+            new_password=new_password,
+        )
+
     async def login(
         self, *, email: str, password: str, remote_address: str, previous: UUID | None = None
     ) -> LoginResult:

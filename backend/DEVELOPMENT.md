@@ -43,9 +43,9 @@ GitHub CI 文件已放在仓库根，但本轮不推送，尚未触发远端运�
 Repository 只执行事务内的数据库操作，不自行提交。不在数据库事务内执行外部模型、搜索、邮件或对象存储 I/O。
 UoW 工厂可并发共享，实例不可共享或复用。显式 commit/rollback 后应退出当前上下文并创建新 UoW。
 
-E1–E8 已完成；用户已确认继续 F API，当前 F1–F2 已完成，F3–F8 开发中。
+E1–E8 已完成；用户已确认继续 F API，当前 F1–F3 已完成，F4–F8 开发中。
 留言提交、一级回复、重试和错误边界见 [COMMENT_SERVICE.md](COMMENT_SERVICE.md)。
-HTTP 认证与首次验证时的冷却截止写入、设置修改入口、真实外部调用、Agent 与 worker 业务执行尚未交付。
+HTTP 认证与首次验证冷却写入已交付；内容/设置/聊天 API、真实外部调用、Agent 与 worker 业务执行继续按 F/G/H 交付。
 E8 已提供正式结果与 lease/代际/权限同事务的提交闸门；H 仍负责实际运行循环、heartbeat、失败分类、重试与具体业务 handler。
 权限结构与失效处理契约见 [POLICY_CONTRACT.md](POLICY_CONTRACT.md)。D 未改动数据库结构，也没有实现真实模型流取消或 HTTP 登录。
 
@@ -121,3 +121,11 @@ E8 已提供正式结果与 lease/代际/权限同事务的提交闸门；H 仍�
 - 4 项数据库流程、2 项密码/TOTP/配置基础核对与 4 项受影响配置检查，共 10 通过、0 跳过。Ruff、86 源文件 mypy 与 diff 检查通过；没有增加迁移。
 - Cryptography 作为核心依赖，使用本地自带库验证。未创建业务库站长账号、未发送真实邮件；HTTP 接入见 F3，发送与密文到期清理见 H。
 - 运行配置与引导说明见 [AUTH_CONTRACT.md](AUTH_CONTRACT.md)。本地提交，不推送。
+
+## F3 登录路由与会话入口（2026-10-06）
+
+- register / verify-email / resend-verification / login / logout / forgot-password / reset-password / me / step-up 接入真实认证服务。严格请求模型拒绝 role 等多余字段，Cookie 原始值只写 Set-Cookie。
+- 全路由已认证写请求检查当前 Cookie、Origin 与 CSRF；匿名认证写请求也检查 Origin。生产 Cookie 配置强校验；认证响应 no-store，失效 Cookie 在 me 中清除。
+- 显式可信 Origin 的凭据 CORS；UTC 输出使用 Z。应用 local/dev/prod lifespan 接入认证，test 只使用显式独立 UoW 注入。
+- 3 项真实 HTTP/数据库基础流程与 9 项受影响配置核对，共 12 通过、0 跳过；Ruff、87 源文件 mypy 与 diff 检查通过。没有全量回归、没有业务库写入。
+- 每个资源/会话 service 仍需复核当前权限与 step-up，入口快照不替代业务授权。未发送真实邮件、未运行业务库站长引导；本地提交，不推送。
