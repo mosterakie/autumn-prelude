@@ -41,3 +41,6 @@ backups/
 .idea/
 .DS_Store
 Thumbs.db
+
+# DSH 沙箱的 Windows 权限修复记录（本地环境产物，非项目内容）
+.dsh-acl-recovery/

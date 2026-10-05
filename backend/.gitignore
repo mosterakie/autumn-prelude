@@ -1,0 +1,13 @@
+# backend 局部忽略规则（根 .gitignore 已覆盖 .env / .venv / __pycache__ 等通用项）
+# 这里只登记后端特有的本地运行产物。
+
+# 依赖安装、类型检查与格式检查缓存
+*.egg-info/
+.venv-tmp/
+.venv-pip-cache/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# 本地运行数据：对象存储 staging/永久区、日志、导出
+var/

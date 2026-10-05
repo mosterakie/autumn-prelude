@@ -1,0 +1,108 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "autumn-prelude-backend"
+version = "0.1.0"
+description = "秋序（Autumn Prelude）后端与 Agent：模块化单体，FastAPI + SQLAlchemy 2 + PostgreSQL + LangGraph"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.34,<1.0",
+    "pydantic>=2.10,<3.0",
+    "pydantic-settings>=2.7,<3.0",
+    "sqlalchemy[asyncio]>=2.0.36,<2.2",
+    "asyncpg>=0.30,<1.0",
+    "alembic>=1.14,<2.0",
+    "greenlet>=3.1,<4.0",
+    "structlog>=24.4,<26.0",
+    "python-json-logger>=3.2,<4.0",
+    # A5 起为硬依赖：knowledge_indexes.embedding 是 pgvector 的 Vector 列。
+    "pgvector>=0.3.6,<1.0",
+]
+
+[project.optional-dependencies]
+# 后续阶段按需启用：Agent（LangGraph）、provider、对象存储、密码哈希
+agent = ["langgraph>=0.2,<1.0", "langgraph-checkpoint-postgres>=2.0,<3.0"]
+auth = ["argon2-cffi>=23.1,<26.0", "pyotp>=2.9,<3.0", "itsdangerous>=2.2,<3.0"]
+providers = ["httpx>=0.28,<1.0"]
+dev = [
+    "httpx>=0.28,<1.0",
+    "pytest>=8.3,<9.0",
+    "pytest-asyncio>=0.25,<2.0",
+    "pytest-timeout>=2.3,<3.0",
+    "ruff>=0.9,<1.0",
+    "mypy>=1.14,<2.0",
+    "import-linter>=2.3,<3.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/autumn_backend"]
+
+# ---------------------------------------------------------------- pytest ----
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+asyncio_mode = "auto"
+# 统一使用 session 事件循环：session 级 engine 不能在多个循环之间复用连接，
+# 否则会出现 "Future attached to a different loop" / 事务已解绑连接等假失败。
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "unit: 无 I/O 的纯单元测试（允许：policies、cursor、hash、状态机纯逻辑）",
+    "integration: 需要真实 PostgreSQL 的集成测试（Service / Repository / 迁移）",
+    "concurrency: 需要真实 PostgreSQL 的并发验收（阶段 C 五个用例，硬闸门）",
+    "cross_tenant: 跨租户隔离验收（v1 验收标准）",
+]
+# 显式禁止 SQLite / Mock Repository 承担并发正确性证明：
+# 并发与约束语义只能在真实 PostgreSQL + pgvector 上验证。
+filterwarnings = [
+    "error::DeprecationWarning:autumn_backend.*",
+    # 负向约束用例会让语句失败，SQLAlchemy 随即自动回滚外层事务；
+    # 夹具在清理时再回滚一次就会看到这条提示。它是预期行为，不是缺陷。
+    "ignore:transaction already deassociated from connection:sqlalchemy.exc.SAWarning",
+]
+
+# ------------------------------------------------------------------ ruff ----
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",   # pycodestyle / pyflakes
+    "I",             # isort
+    "UP",            # pyupgrade
+    "B",             # flake8-bugbear
+    "ASYNC",         # flake8-async：禁止在协程里做阻塞调用
+    "T20",           # flake8-print：库代码不得 print
+    "RUF",
+]
+# 项目注释与 docstring 使用中文全角标点（：、，、（）），
+# RUF001/002/003 会把正常中文标点误报为"易混淆字符"，故关闭。
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["T20"]
+"alembic/env.py" = ["T20"]
+# CLI 与运维脚本是面向终端的程序：stdout 用于机器可读输出，stderr 用于诊断。
+"src/autumn_backend/cli.py" = ["T20"]
+"scripts/**" = ["T20"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["autumn_backend"]
+
+# ----------------------------------------------------------------- mypy -----
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "src"
+packages = ["autumn_backend"]
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
