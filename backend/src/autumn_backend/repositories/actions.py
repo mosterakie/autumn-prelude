@@ -4,7 +4,7 @@ from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, true, update
 from sqlalchemy.dialects.postgresql import insert
 
 from autumn_backend.db.enums import ActionAuthorizationKind, ActionStatus, ActionType
@@ -18,6 +18,136 @@ from autumn_backend.repositories.result import Creation
 class ActionRepository(ControlledMutableRepository[Action]):
     model = Action
     transition_fields = frozenset({"executed_at", "result"})
+
+    async def propose(
+        self,
+        *,
+        actor_id: UUID,
+        auth_session_id: UUID,
+        run_id: UUID | None,
+        authorization_message_id: UUID | None,
+        action_type: ActionType,
+        target_resource_id: UUID | None,
+        expected_version: int | None,
+        expected_acl_version: int | None,
+        idempotency_key: str,
+        parameters: dict[str, Any],
+        parameters_hash: str,
+    ) -> Creation[Action]:
+        with database_errors():
+            action = (
+                await self.session.execute(
+                    insert(Action)
+                    .values(
+                        actor_id=actor_id,
+                        auth_session_id=auth_session_id,
+                        run_id=run_id,
+                        authorization_message_id=authorization_message_id,
+                        type=action_type,
+                        target_resource_id=target_resource_id,
+                        expected_version=expected_version,
+                        expected_acl_version=expected_acl_version,
+                        idempotency_key=idempotency_key,
+                        parameters=parameters,
+                        parameters_hash=parameters_hash,
+                        authorization_kind=ActionAuthorizationKind.CONFIRMED_PREVIEW,
+                        status=ActionStatus.AWAITING_CONFIRMATION,
+                        requires_confirmation=True,
+                        expires_at=func.clock_timestamp() + timedelta(minutes=15),
+                    )
+                    .on_conflict_do_nothing(constraint="uq_actions_actor_id_idempotency_key")
+                    .returning(Action)
+                )
+            ).scalar_one_or_none()
+        if action is not None:
+            return Creation(action, True)
+        action = (
+            await self.session.execute(
+                select(Action)
+                .where(Action.actor_id == actor_id, Action.idempotency_key == idempotency_key)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one()
+        if (
+            action.type,
+            action.target_resource_id,
+            action.expected_version,
+            action.expected_acl_version,
+            action.run_id,
+            action.authorization_message_id,
+            action.parameters_hash,
+            action.parameters,
+            action.authorization_kind,
+            action.requires_confirmation,
+        ) != (
+            action_type,
+            target_resource_id,
+            expected_version,
+            expected_acl_version,
+            run_id,
+            authorization_message_id,
+            parameters_hash,
+            parameters,
+            ActionAuthorizationKind.CONFIRMED_PREVIEW,
+            True,
+        ):
+            raise IdempotencyConflictError("动作幂等键已用于不同语义")
+        return Creation(action, False)
+
+    async def confirm(
+        self, action_id: UUID, expected_version: int, auth_session_id: UUID
+    ) -> Action:
+        with database_errors():
+            action = (
+                await self.session.execute(
+                    update(Action)
+                    .where(
+                        Action.id == action_id,
+                        Action.version == expected_version,
+                        Action.status == ActionStatus.AWAITING_CONFIRMATION,
+                        Action.authorization_kind == ActionAuthorizationKind.CONFIRMED_PREVIEW,
+                        Action.requires_confirmation.is_(True),
+                        Action.expires_at > func.clock_timestamp(),
+                    )
+                    .values(
+                        status=ActionStatus.READY,
+                        confirmed_at=func.clock_timestamp(),
+                        auth_session_id=auth_session_id,
+                        version=Action.version + 1,
+                    )
+                    .returning(Action)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one_or_none()
+        if action is None:
+            raise ConflictError("动作已过期或状态已变化")
+        return action
+
+    async def cancel(
+        self, action_id: UUID, expected_version: int, *, expired: bool = False
+    ) -> Action:
+        with database_errors():
+            action = (
+                await self.session.execute(
+                    update(Action)
+                    .where(
+                        Action.id == action_id,
+                        Action.version == expected_version,
+                        Action.status.in_((ActionStatus.AWAITING_CONFIRMATION, ActionStatus.READY)),
+                        Action.expires_at <= func.clock_timestamp() if expired else true(),
+                    )
+                    .values(
+                        status=ActionStatus.EXPIRED if expired else ActionStatus.CANCELLED,
+                        version=Action.version + 1,
+                    )
+                    .returning(Action)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one_or_none()
+        if action is None:
+            raise ConflictError("动作状态已变化")
+        return action
 
     async def begin_explicit_publication(
         self,

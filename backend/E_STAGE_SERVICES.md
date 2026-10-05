@@ -73,3 +73,32 @@ manifest 或失效权限拒绝继续。服务生成 schema_version=1 的完整 m
 
 基础验收 4 项：私人/公开隔离与撤回引用、DOCX/网页版本与无 OCR、嵌入期间撤回丢弃结果、
 历史来源闭包复制后重新失效；外部端口测试同时断言 active_uows=0。
+
+## E7 动作与补充信息
+
+ActionService 接受严格、禁止额外字段的 ResourcePreview / SettingsPreview / MemoryPreview：
+发布、撤回、删除资源，修改 AI 限额，新增/修改/删除本人记忆。schema_version=1 的 command
+包含目标类型/身份、内容版本、ACL 版本、实际参数；规范 JSON 的 SHA256 与不可空
+(actor_id, idempotency_key) 一起判定重试。没有资源 FK 的设置/新增记忆也按同一身份去重。
+未知动作/参数拒绝；保留策略的具体预览参数与 handler 随 F 的保留设置入口扩展。
+
+preview 总是 confirmed_preview + requires_confirmation=True；Agent 提议必须绑定本人
+Run 与同会话用户消息，Run 进入 waiting_approval，事件只存 Action ID。模型不能提交身份、
+授权方式或关闭确认。read 返回账号当前可见的预览。confirm 要求匹配展示的参数摘要、
+Action version、目标双版本、当前站长升级验证；有 Run 时还复核完整上下文及账号执行名额。
+Action ready、Run queued、唯一 action.execute Job 和脱敏审计同事务，确认不代表已执行成功。
+实际各动作 handler 与 succeeded / 业务结果的原子提交由 H 调用 E8 联合校验入口完成。
+F 的确认路由仅接收用户页面操作，不注册为 Agent 工具；E1 明确请求入口也不能给模型直接调用。
+
+同键异语义冲突，ready 同体重试不重复入队。到期确认持久标记 expired；查看仍显示真实状态。
+取消/过期同时终止关联的等待 Run，未派发模型则释放预留；派发后保留原扣次，不按取消退款。
+确认已过期或被取消的动作不能在后台继续执行，H 必须检查当前 Action 状态及有效期。
+
+InputWaitService.request 保存 schema_version=1 的 id/prompt/options/expires_at，Run 进入
+waiting_input。answer 锁当前账号/会话/Run，重新鉴权及验证完整来源，检查有效期/选项/执行名额，
+将 consumed_at、answer_hash、answer_message_id、用户消息、Run queued、run.resume Job 与事件
+同事务保存；答案正文只在消息表。相同等待项与同答案返回原记录，异答案 409；没有新 Reservation、
+新扣次、ask 速率或冷却判断。运行器在后续 G/H 负责等待超时扫描和状态机调度。
+
+基础验收 4 项：预览/确认/幂等/归属及无资源目标、旧 ACL 与持久过期、答案去重/不重新收费、
+入队后的故障回滚消费标记/消息/任务。服务只执行数据库操作，没有外部 I/O。
