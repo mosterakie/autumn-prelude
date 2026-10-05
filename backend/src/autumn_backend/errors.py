@@ -23,3 +23,7 @@ class OptimisticLockError(ConflictError):
 
 class QuotaExceededError(DomainError):
     code = "quota_exceeded"
+
+
+class LeaseLostError(ConflictError):
+    code = "lease_lost"
