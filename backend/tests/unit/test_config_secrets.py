@@ -24,6 +24,8 @@ _PROD_BASE: dict[str, object] = {
     "environment": Environment.PROD,
     "cookie_secure": True,
     "cookie_name": "__Host-autumn_session",
+    "auth_encryption_key": "e" * 40,
+    "trusted_origins": ("https://autumn.example",),
 }
 
 

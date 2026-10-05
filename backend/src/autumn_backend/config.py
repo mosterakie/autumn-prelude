@@ -13,6 +13,7 @@ import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, PostgresDsn, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -35,11 +36,12 @@ class Environment(enum.StrEnum):
 # 仅检查长度是不够的，因为它们本身已经超过 32 字符。
 _DEV_SESSION_SECRET = "dev-only-session-secret-do-not-use-in-production"
 _DEV_CSRF_SECRET = "dev-only-csrf-secret-do-not-use-in-production"
+_DEV_AUTH_ENCRYPTION_KEY = "dev-only-auth-encryption-do-not-use-in-production"
 
 #: 生产环境必须显式提供、且不得等于这两个占位值的密钥字段。
-_REQUIRED_IN_PRODUCTION = ("session_secret", "csrf_secret")
+_REQUIRED_IN_PRODUCTION = ("session_secret", "csrf_secret", "auth_encryption_key")
 
-_PLACEHOLDER_SECRETS = frozenset({_DEV_SESSION_SECRET, _DEV_CSRF_SECRET})
+_PLACEHOLDER_SECRETS = frozenset({_DEV_SESSION_SECRET, _DEV_CSRF_SECRET, _DEV_AUTH_ENCRYPTION_KEY})
 
 
 class Settings(BaseSettings):
@@ -68,7 +70,11 @@ class Settings(BaseSettings):
     # ----------------------------------------------------------- 会话与安全 --
     session_secret: SecretStr = SecretStr(_DEV_SESSION_SECRET)
     csrf_secret: SecretStr = SecretStr(_DEV_CSRF_SECRET)
+    auth_encryption_key: SecretStr = SecretStr(_DEV_AUTH_ENCRYPTION_KEY)
     session_ttl_hours: int = Field(default=720, ge=1)
+    session_idle_hours: int = Field(default=24, ge=1)
+    step_up_minutes: int = Field(default=15, ge=1, le=30)
+    trusted_origins: tuple[str, ...] = ("http://localhost:3000", "http://127.0.0.1:3000")
     cookie_name: str = "autumn_session"
     cookie_secure: bool = False
     cookie_domain: str | None = None
@@ -92,7 +98,7 @@ class Settings(BaseSettings):
     storage_root: Path = BACKEND_ROOT / "var" / "storage"
 
     # -------------------------------------------------------------- 校验 ----
-    @field_validator("session_secret", "csrf_secret", mode="before")
+    @field_validator("session_secret", "csrf_secret", "auth_encryption_key", mode="before")
     @classmethod
     def _reject_blank_secret(cls, value: Any) -> Any:
         if value is None or (isinstance(value, str) and not value.strip()):
@@ -109,12 +115,35 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _enforce_production_invariants(self) -> Settings:
+        if not self.trusted_origins:
+            raise ValueError("必须配置明确的可信 Origin")
+        for origin in self.trusted_origins:
+            parsed = urlsplit(origin)
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.hostname
+                or parsed.username
+                or parsed.password
+                or parsed.path
+                or parsed.query
+                or parsed.fragment
+                or origin.endswith(":")
+            ):
+                raise ValueError("可信 Origin 必须是无路径的完整 HTTP(S) Origin")
         if self.environment is Environment.PROD:
             self._require_explicit_production_secrets()
             if not self.cookie_secure:
                 raise ValueError("生产环境必须启用 Secure Cookie")
             if not self.cookie_name.startswith("__Host-"):
                 raise ValueError("生产环境会话 Cookie 必须使用 __Host- 前缀")
+            if self.cookie_domain is not None:
+                raise ValueError("生产 __Host- Cookie 不得设置 Domain")
+            if "trusted_origins" not in self.model_fields_set or any(
+                not origin.startswith("https://") for origin in self.trusted_origins
+            ):
+                raise ValueError("生产环境必须显式配置 HTTPS 可信 Origin")
+        elif self.cookie_name.startswith("__Host-"):
+            raise ValueError("非生产环境必须使用独立 Cookie 名")
         return self
 
     def _require_explicit_production_secrets(self) -> None:
@@ -131,6 +160,7 @@ class Settings(BaseSettings):
         env_names = {
             "session_secret": "AUTUMN_SESSION_SECRET",
             "csrf_secret": "AUTUMN_CSRF_SECRET",
+            "auth_encryption_key": "AUTUMN_AUTH_ENCRYPTION_KEY",
         }
         for field_name in _REQUIRED_IN_PRODUCTION:
             env_name = env_names[field_name]

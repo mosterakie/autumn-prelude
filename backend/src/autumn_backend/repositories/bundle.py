@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autumn_backend.repositories.actions import ActionRepository
 from autumn_backend.repositories.audit import AuditEventRepository
+from autumn_backend.repositories.auth_credentials import AuthCredentialRepository
 from autumn_backend.repositories.comments import CommentRepository
 from autumn_backend.repositories.conversations import ConversationRepository
 from autumn_backend.repositories.files import FileRepository
@@ -49,6 +50,7 @@ class Repositories:
     rate_limits: RateLimitRepository
     files: FileRepository
     knowledge: KnowledgeRepository
+    auth_credentials: AuthCredentialRepository
 
     @classmethod
     def bind(cls, session: AsyncSession, access_guard: Callable[[], None]) -> "Repositories":
@@ -73,4 +75,5 @@ class Repositories:
             rate_limits=RateLimitRepository(session, access_guard=access_guard),
             files=FileRepository(session, access_guard=access_guard),
             knowledge=KnowledgeRepository(session, access_guard=access_guard),
+            auth_credentials=AuthCredentialRepository(session, access_guard=access_guard),
         )

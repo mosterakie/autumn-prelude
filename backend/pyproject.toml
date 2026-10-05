@@ -22,6 +22,8 @@ dependencies = [
     # Windows 没有系统 IANA 时区库，日额度仍须按同一时区规则切分。
     "tzdata>=2025.2,<2027.0",
     "pypdf>=6.0,<7.0",
+    # Argon2id PHC 密码串与 Fernet 认证加密；F2 为核心登录能力。
+    "cryptography>=45.0,<51.0",
     # A5 起为硬依赖：knowledge_indexes.embedding 是 pgvector 的 Vector 列。
     "pgvector>=0.3.6,<1.0",
 ]
@@ -29,7 +31,6 @@ dependencies = [
 [project.optional-dependencies]
 # 后续阶段按需启用：Agent（LangGraph）、provider、对象存储、密码哈希
 agent = ["langgraph>=0.2,<1.0", "langgraph-checkpoint-postgres>=2.0,<3.0"]
-auth = ["argon2-cffi>=23.1,<26.0", "pyotp>=2.9,<3.0", "itsdangerous>=2.2,<3.0"]
 providers = ["httpx>=0.28,<1.0"]
 dev = [
     "httpx>=0.28,<1.0",
