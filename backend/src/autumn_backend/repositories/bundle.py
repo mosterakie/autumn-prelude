@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autumn_backend.repositories.comments import CommentRepository
 from autumn_backend.repositories.identity import SettingRepository, UserRepository
 from autumn_backend.repositories.jobs import JobRepository
 from autumn_backend.repositories.provider_calls import ProviderCallRepository
@@ -22,6 +23,7 @@ class Repositories:
     quota_reservations: QuotaReservationRepository
     jobs: JobRepository
     provider_calls: ProviderCallRepository
+    comments: CommentRepository
 
     @classmethod
     def bind(cls, session: AsyncSession, access_guard: Callable[[], None]) -> "Repositories":
@@ -34,4 +36,5 @@ class Repositories:
             quota_reservations=QuotaReservationRepository(session, access_guard=access_guard),
             jobs=JobRepository(session, access_guard=access_guard),
             provider_calls=ProviderCallRepository(session, access_guard=access_guard),
+            comments=CommentRepository(session, access_guard=access_guard),
         )

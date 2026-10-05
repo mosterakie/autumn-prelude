@@ -466,6 +466,7 @@ class Comment(UUIDPrimaryKey, Timestamped, Versioned, Deletable, Base):
     client_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
 
     body: Mapped[str] = mapped_column(Text, nullable=False)
+    request_hash: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[CommentStatus] = mapped_column(
         enum_column_type(CommentStatus, length=16),
         nullable=False,
@@ -482,6 +483,7 @@ class Comment(UUIDPrimaryKey, Timestamped, Versioned, Deletable, Base):
         UniqueConstraint("id", "resource_id", name="uq_comments_id_resource_id"),
         CheckConstraint(enum_check_expression("status", CommentStatus), name="status_valid"),
         CheckConstraint("length(body) > 0", name="body_not_empty"),
+        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$'", name="request_hash_shape"),
         CheckConstraint("parent_id IS NULL OR parent_id <> id", name="parent_not_self"),
         # 跨行约束：父留言必须与本条属于同一资源。
         # MATCH SIMPLE：``resource_id`` 为空的留言板回复不受校验。
