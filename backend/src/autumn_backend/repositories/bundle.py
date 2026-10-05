@@ -9,6 +9,7 @@ from autumn_backend.repositories.actions import ActionRepository
 from autumn_backend.repositories.audit import AuditEventRepository
 from autumn_backend.repositories.comments import CommentRepository
 from autumn_backend.repositories.conversations import ConversationRepository
+from autumn_backend.repositories.files import FileRepository
 from autumn_backend.repositories.identity import (
     AuthSessionRepository,
     SettingRepository,
@@ -45,6 +46,7 @@ class Repositories:
     audit_events: AuditEventRepository
     messages: MessageRepository
     rate_limits: RateLimitRepository
+    files: FileRepository
 
     @classmethod
     def bind(cls, session: AsyncSession, access_guard: Callable[[], None]) -> "Repositories":
@@ -67,4 +69,5 @@ class Repositories:
             audit_events=AuditEventRepository(session, access_guard=access_guard),
             messages=MessageRepository(session, access_guard=access_guard),
             rate_limits=RateLimitRepository(session, access_guard=access_guard),
+            files=FileRepository(session, access_guard=access_guard),
         )

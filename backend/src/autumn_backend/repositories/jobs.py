@@ -32,6 +32,24 @@ class JobSpec:
 class JobRepository(ControlledMutableRepository[Job]):
     model = Job
 
+    async def require_lease(self, job_id: UUID, token: UUID) -> Job:
+        job = (
+            await self.session.execute(
+                select(Job)
+                .where(
+                    Job.id == job_id,
+                    Job.status == JobStatus.RUNNING,
+                    Job.lease_token == token,
+                    Job.lease_expires_at > func.clock_timestamp(),
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if job is None:
+            raise LeaseLostError("任务租约已丢失或过期")
+        return job
+
     async def enqueue(self, spec: JobSpec) -> Creation[Job]:
         if (
             not spec.idempotency_key

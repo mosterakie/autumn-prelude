@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from contextvars import Token
 from types import TracebackType
 from typing import Self
 
@@ -22,6 +23,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from autumn_backend.config import Settings, get_settings
+from autumn_backend.io_boundary import active_uows
 from autumn_backend.observability.logging import get_logger
 from autumn_backend.repositories.bundle import Repositories
 from autumn_backend.repositories.constraints import database_errors
@@ -77,6 +79,7 @@ class UnitOfWork:
         self._entered = False
         self._owner_task: asyncio.Task[object] | None = None
         self._repositories: Repositories | None = None
+        self._boundary_token: Token[int] | None = None
 
     # ------------------------------------------------------------- 生命周期 --
     async def __aenter__(self) -> Self:
@@ -87,6 +90,7 @@ class UnitOfWork:
         self._session = self._session_factory()
         try:
             await self._session.begin()
+            self._boundary_token = active_uows.set(active_uows.get() + 1)
             self._repositories = Repositories.bind(self._session, self._assert_active)
         except BaseException:
             await self.close()
@@ -156,11 +160,16 @@ class UnitOfWork:
 
     async def close(self) -> None:
         self._assert_owner()
-        if self._session is not None:
-            await self._session.close()
-            self._session = None
-            self._repositories = None
-            self._finished = True
+        try:
+            if self._session is not None:
+                await self._session.close()
+                self._session = None
+                self._repositories = None
+                self._finished = True
+        finally:
+            if self._boundary_token is not None:
+                active_uows.reset(self._boundary_token)
+                self._boundary_token = None
 
 
 class UnitOfWorkFactory:
