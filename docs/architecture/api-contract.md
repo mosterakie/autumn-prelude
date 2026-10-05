@@ -1,6 +1,6 @@
 # 秋序前后端接口契约
 
-版本：v1.0。本文约定首版接口，不表示这些端点已经实现。后续以 FastAPI 输出的 OpenAPI 与本文一致性检查维护契约。
+版本：v1.1。本文约定首版接口，不表示这些端点已经实现。前端实现补充了会话恢复元数据与公开权限版本字段；后续以 FastAPI 输出的 OpenAPI 与本文一致性检查维护契约。
 
 ## 1 通用约定
 
@@ -95,6 +95,7 @@ CommentDTO 为 id、resource_id、parent_id、author_display_name、body、statu
 | --- | --- | --- |
 | POST /api/conversations | 已验证用户 | mode、title 可空；owner 模式要求站长额外验证 |
 | GET /api/conversations | 本人 | 按 mode 过滤，分页；owner 模式要求额外验证 |
+| GET /api/conversations/{id} | 会话本人 | 读取 ConversationDTO，按固定 mode 检查权限，供刷新恢复使用 |
 | GET /api/conversations/{id}/messages | 会话本人 | 分页历史，隐藏已失权的派生内容 |
 | PATCH /api/conversations/{id} | 会话本人 | title、expected_version；不能更改 mode |
 | DELETE /api/conversations/{id} | 会话本人 | 软删除并安排相关清理，不修改计数 |
@@ -106,6 +107,8 @@ CommentDTO 为 id、resource_id、parent_id、author_display_name、body、statu
 | GET /api/citations/{id} | 引用所属运行本人 | 对当前仍获准的来源返回摘录与定位 |
 
 mode 为 public 或 owner，创建后固定。public 表示使用公开知识，聊天记录本身不公开。每个会话只有一个非终态运行；需要换题可新建会话。
+
+ConversationDTO 为 id、title、mode、version、created_at、active_run_id。active_run_id 为非终态运行 ID，无活动运行时为 null；返回 ID 不绕过 /runs 的再次鉴权。消息列表返回最近一页，页内按创建时间升序，next_cursor 指向更早的一页。
 
 ### AskRequest
 
@@ -174,8 +177,8 @@ data: {"message_id":"33333333-3333-4333-8333-333333333333","body":"找到了两�
 | DELETE /api/resources/{id} | expected_version；软删除、撤回公开、返回清理任务 |
 | GET /api/resources/{id}/versions | 版本列表 |
 | GET /api/resources/{id}/versions/{revision_id}/file | 鉴权后读取确切版本原文件 |
-| POST /api/resources/{id}/publication/preview | revision_id、public_fields、ai_enabled、raw_download_enabled、expected_version |
-| POST /api/resources/{id}/publication/revoke | expected_version；立即撤回 |
+| POST /api/resources/{id}/publication/preview | revision_id、public_fields、ai_enabled、raw_download_enabled、expected_version、expected_acl_version |
+| POST /api/resources/{id}/publication/revoke | expected_version、expected_acl_version；立即撤回 |
 | POST /api/knowledge/files | multipart file 与 title；创建资源和解析 job，202 |
 | POST /api/knowledge/urls | url、mode、title 可空、tags；收藏或抓取入库，202 |
 | POST /api/resources/{id}/refresh | expected_version；仅网页资料手动抓取新版本，202 |
@@ -197,7 +200,8 @@ JobDTO 包括 id、kind、status、phase、progress、resource_id、result、err
   "public_fields": ["title", "url", "tags"],
   "ai_enabled": true,
   "raw_download_enabled": false,
-  "expected_version": 3
+  "expected_version": 3,
+  "expected_acl_version": 2
 }
 ```
 
@@ -225,7 +229,7 @@ preview 返回 ActionDTO 与预览，不立即发布。站长点击确认后执�
 | POST /api/moderation/reports/{id}/resolve | 站长；resolution |
 | GET /api/audit-events | 站长；按对象和时间查询脱敏操作记录 |
 
-ActionDTO 包括 id、type、target、expected_version、parameters_hash、summary、changes、impact、requires_confirmation、status、expires_at、can_undo、result。status 为 proposed、awaiting_confirmation、ready、running、succeeded、failed、cancelled、expired。
+ActionDTO 包括 id、type、target、expected_version、expected_acl_version、parameters_hash、summary、changes、impact、requires_confirmation、status、expires_at、can_undo、result。expected_acl_version 在公开权限操作中必填，执行时与内容版本一起重新检查，避免旧预览覆盖已改变的权限。status 为 proposed、awaiting_confirmation、ready、running、succeeded、failed、cancelled、expired。
 
 execute 只提交 action_id 与本次展示的 parameters_hash，不允许替换目标或参数。权限、版本和到期时间均重新检查。已成功执行的同一动作返回既有结果；undo 是新的补偿动作，不修改历史成功记录，也不能撤回已经传播出去的公开内容。
 
