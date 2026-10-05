@@ -6,11 +6,14 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autumn_backend.repositories.comments import CommentRepository
+from autumn_backend.repositories.conversations import ConversationRepository
 from autumn_backend.repositories.identity import SettingRepository, UserRepository
 from autumn_backend.repositories.jobs import JobRepository
+from autumn_backend.repositories.memories import MemoryRepository
 from autumn_backend.repositories.provider_calls import ProviderCallRepository
 from autumn_backend.repositories.publications import PublicationRepository
 from autumn_backend.repositories.quota import QuotaBucketRepository, QuotaReservationRepository
+from autumn_backend.repositories.resources import ResourceRepository
 from autumn_backend.repositories.runs import RunEventRepository, RunRepository
 
 
@@ -26,6 +29,9 @@ class Repositories:
     provider_calls: ProviderCallRepository
     comments: CommentRepository
     publications: PublicationRepository
+    resources: ResourceRepository
+    conversations: ConversationRepository
+    memories: MemoryRepository
 
     @classmethod
     def bind(cls, session: AsyncSession, access_guard: Callable[[], None]) -> "Repositories":
@@ -40,4 +46,7 @@ class Repositories:
             provider_calls=ProviderCallRepository(session, access_guard=access_guard),
             comments=CommentRepository(session, access_guard=access_guard),
             publications=PublicationRepository(session, access_guard=access_guard),
+            resources=ResourceRepository(session, access_guard=access_guard),
+            conversations=ConversationRepository(session, access_guard=access_guard),
+            memories=MemoryRepository(session, access_guard=access_guard),
         )
