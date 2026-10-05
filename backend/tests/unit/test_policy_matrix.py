@@ -9,6 +9,7 @@ from autumn_backend.policies.capabilities import capabilities_for
 from autumn_backend.policies.decision import DenialCode
 from autumn_backend.policies.facts import (
     AccountStatus,
+    ContextFacts,
     ConversationMode,
     Operation,
     SearchMode,
@@ -106,6 +107,19 @@ def test_cooldown_only_applies_to_new_ask_and_includes_exact_boundary() -> None:
     )
     assert evaluate(actor, replace(request, now=deadline, authentication=renewed)).allowed
     resume = facts(Operation.RESUME_RUN, auth, obj=target(actor, TargetKind.RUN))
+    assert resume.target is not None
+    resume = replace(
+        resume,
+        context=ContextFacts(
+            run_id=resume.target.object_id,
+            mode=ConversationMode.PUBLIC,
+            captured_scope_epoch=3,
+            captured_generation=0,
+            current_generation=0,
+            sources=(),
+            sources_complete=True,
+        ),
+    )
     assert evaluate(actor, resume).allowed
     assert evaluate(actor, facts(Operation.SEARCH_PUBLIC_KNOWLEDGE, auth)).allowed
     assert evaluate(actor, facts(Operation.CREATE_COMMENT, auth)).allowed
@@ -149,6 +163,9 @@ def test_comment_creation_cannot_turn_missing_resource_into_guestbook() -> None:
     assert (
         evaluate(actor, replace(request, requested_resource_id=uuid4())).code
         is DenialCode.NOT_FOUND
+    )
+    assert (
+        evaluate(actor, replace(request, requested_parent_id=uuid4())).code is DenialCode.NOT_FOUND
     )
 
 

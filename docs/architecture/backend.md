@@ -94,6 +94,12 @@ flowchart TD
 
 checkpoint 是恢复依据，不是权限来源。恢复前检查 content_acl_epoch 和身份；权限发生变化时，重新构建已获准的上下文，不能直接恢复含旧资料的节点。框架持久化表由对应库管理，应用保留版本锁和升级验证。[LangGraph 持久化](https://docs.langchain.com/oss/python/langgraph/persistence)
 
+D 阶段的纯判定与执行边界见 [权限契约](../../backend/POLICY_CONTRACT.md)。ACL epoch
+变化或任何直接/间接来源失权后，旧执行上下文返回 ACL_CONTEXT_INVALIDATED，
+停止继续生成或输出。失效通知使用接口既有 source.invalidated / scope.changed，
+不增加 run.invalidated 事件。需要继续时先重新鉴权和重建全部上下文，再进入新的
+执行代际；持久代际与租约/权限的联合提交校验在 G/H 实现。
+
 首版限制每轮工具调用数、运行时长、输入与输出 token，参数可配置。没有获准工具时不伪造执行结果；角色措辞与实际结果分开生成。
 
 ### 工具清单

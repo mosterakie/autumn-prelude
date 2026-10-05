@@ -8,7 +8,7 @@ from autumn_backend.policies.actor import ActorRole, Capability
 from autumn_backend.policies.decision import DenialCode
 from autumn_backend.policies.facts import AccountStatus, ConversationMode, Operation, TargetKind
 from autumn_backend.policies.policy import evaluate
-from tests.unit.policy_helpers import NOW, anonymous, facts, identity, resource, target
+from tests.unit.policy_helpers import NOW, anonymous, facts, identity, resource, source, target
 
 pytestmark = pytest.mark.unit
 
@@ -186,18 +186,19 @@ def test_citation_requires_run_owner_and_current_ai_permission() -> None:
     actor, auth = identity()
     owner, _ = identity(ActorRole.OWNER)
     res = resource(owner)
-    citation = replace(target(actor, TargetKind.CITATION), resource_id=res.resource_id)
-    assert evaluate(actor, facts(Operation.READ_CITATION, auth, obj=citation, res=res)).allowed
+    captured = source(res)
+    citation = replace(
+        target(actor, TargetKind.CITATION),
+        resource_id=res.resource_id,
+        object_id=captured.source_id,
+    )
+    data = replace(facts(Operation.READ_CITATION, auth, obj=citation, res=res), source=captured)
+    assert evaluate(actor, data).allowed
     assert res.publication is not None
     res = replace(res, publication=replace(res.publication, ai_enabled=False))
-    assert (
-        evaluate(actor, facts(Operation.READ_CITATION, auth, obj=citation, res=res)).code
-        is DenialCode.NOT_FOUND
-    )
-    assert (
-        evaluate(owner, facts(Operation.READ_CITATION, None, obj=citation, res=res)).code
-        is DenialCode.NOT_FOUND
-    )
+    data = replace(data, resource=res, source=replace(captured, resource=res))
+    assert evaluate(actor, data).code is DenialCode.NOT_FOUND
+    assert evaluate(owner, replace(data, authentication=None)).code is DenialCode.NOT_FOUND
 
 
 def test_unknown_or_incomplete_operations_fail_closed() -> None:

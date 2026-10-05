@@ -49,6 +49,8 @@ class Operation(StrEnum):
     CANCEL_RUN = "cancel_run"
     RESUME_RUN = "resume_run"
     READ_CITATION = "read_citation"
+    CONTINUE_RUN = "continue_run"
+    EMIT_RUN_OUTPUT = "emit_run_output"
     SEARCH_PUBLIC_KNOWLEDGE = "search_public_knowledge"
     SEARCH_PRIVATE_KNOWLEDGE = "search_private_knowledge"
     SEARCH_WEB = "search_web"
@@ -200,6 +202,91 @@ class TargetFacts:
         optional_datetime(self.expires_at, "expires_at")
 
 
+class SourceScope(StrEnum):
+    PUBLIC = "public"
+    OWNER = "owner"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RevisionFacts:
+    """查询到的不可变原稿记录；允许是已发布或已捕获的旧版本。"""
+
+    revision_id: UUID
+    resource_id: UUID
+
+    def __post_init__(self) -> None:
+        uuid_value(self.revision_id, "revision_id")
+        uuid_value(self.resource_id, "resource_id")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SourceFacts:
+    """持久来源身份 + 当前查到的资源/原稿，不保存文本。"""
+
+    source_id: UUID
+    scope: SourceScope
+    resource_id: UUID
+    revision_id: UUID
+    acl_version: int
+    publication_id: UUID | None
+    resource: ResourceFacts | None
+    revision: RevisionFacts | None
+
+    def __post_init__(self) -> None:
+        for name in ("source_id", "resource_id", "revision_id"):
+            uuid_value(getattr(self, name), name)
+        if not isinstance(self.scope, SourceScope):
+            raise ValueError("scope must be a SourceScope")
+        nonnegative_integer(self.acl_version, "acl_version")
+        if self.publication_id is not None:
+            uuid_value(self.publication_id, "publication_id")
+        if (self.scope is SourceScope.PUBLIC) != (self.publication_id is not None):
+            raise ValueError("only public sources require a publication_id")
+        if self.resource is not None and not isinstance(self.resource, ResourceFacts):
+            raise ValueError("resource must be ResourceFacts")
+        if self.revision is not None and not isinstance(self.revision, RevisionFacts):
+            raise ValueError("revision must be RevisionFacts")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WebSourceFacts:
+    """联网来源同样属于来源 Run 的用户，并始终要求当前站长升级权限。"""
+
+    source_id: UUID
+    owner_id: UUID
+
+    def __post_init__(self) -> None:
+        uuid_value(self.source_id, "source_id")
+        uuid_value(self.owner_id, "owner_id")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ContextFacts:
+    """全部实际输入依赖的闭包；generation 是后续执行器的代际契约。"""
+
+    run_id: UUID
+    mode: ConversationMode
+    captured_scope_epoch: int
+    captured_generation: int
+    current_generation: int
+    sources: tuple[SourceFacts | WebSourceFacts, ...]
+    sources_complete: bool = False
+
+    def __post_init__(self) -> None:
+        uuid_value(self.run_id, "run_id")
+        if not isinstance(self.mode, ConversationMode):
+            raise ValueError("mode must be a ConversationMode")
+        for name in ("captured_scope_epoch", "captured_generation", "current_generation"):
+            nonnegative_integer(getattr(self, name), name)
+        if not isinstance(self.sources, tuple) or any(
+            not isinstance(value, SourceFacts | WebSourceFacts) for value in self.sources
+        ):
+            raise ValueError("sources must be a tuple of source facts")
+        if len({source.source_id for source in self.sources}) != len(self.sources):
+            raise ValueError("sources must be deduplicated by source_id")
+        boolean_value(self.sources_complete, "sources_complete")
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PolicyFacts:
     """缺失对象用 None；时钟和当前 epoch 由 Service 明确传入，拒绝隐式读取。"""
@@ -212,7 +299,10 @@ class PolicyFacts:
     target: TargetFacts | None = None
     requested_mode: ConversationMode | None = None
     requested_resource_id: UUID | None = None
+    requested_parent_id: UUID | None = None
     search_mode: SearchMode = SearchMode.SITE
+    source: SourceFacts | WebSourceFacts | None = None
+    context: ContextFacts | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.operation, Operation):
@@ -224,12 +314,16 @@ class PolicyFacts:
             ("resource", ResourceFacts),
             ("target", TargetFacts),
             ("requested_mode", ConversationMode),
+            ("source", SourceFacts | WebSourceFacts),
+            ("context", ContextFacts),
         ):
             value = getattr(self, name)
             if value is not None and not isinstance(value, expected):
                 raise ValueError(f"{name} has an invalid type")
         if not isinstance(self.search_mode, SearchMode):
             raise ValueError("search_mode must be a SearchMode")
+        if self.requested_parent_id is not None:
+            uuid_value(self.requested_parent_id, "requested_parent_id")
         if self.requested_resource_id is not None:
             uuid_value(self.requested_resource_id, "requested_resource_id")
             if (
@@ -240,3 +334,6 @@ class PolicyFacts:
         if self.target is not None and self.resource is not None:
             if self.target.resource_id != self.resource.resource_id:
                 raise ValueError("related resource must match target.resource_id")
+        if isinstance(self.source, SourceFacts) and self.resource is not None:
+            if self.source.resource != self.resource:
+                raise ValueError("source and resource facts must use the same current snapshot")

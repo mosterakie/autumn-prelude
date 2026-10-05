@@ -12,6 +12,9 @@ from autumn_backend.policies.facts import (
     PolicyFacts,
     PublicationFacts,
     ResourceFacts,
+    RevisionFacts,
+    SourceFacts,
+    SourceScope,
     TargetFacts,
     TargetKind,
 )
@@ -104,4 +107,23 @@ def facts(
         authentication=authentication,
         target=obj,
         resource=res,
+    )
+
+
+def source(res: ResourceFacts, *, private: bool = False) -> SourceFacts:
+    revision_id = res.current_revision_id
+    publication_id = None
+    if not private:
+        assert res.publication is not None
+        revision_id = res.publication.revision_id
+        publication_id = res.publication.publication_id
+    return SourceFacts(
+        source_id=uuid4(),
+        scope=SourceScope.OWNER if private else SourceScope.PUBLIC,
+        resource_id=res.resource_id,
+        revision_id=revision_id,
+        acl_version=res.acl_version,
+        publication_id=publication_id,
+        resource=res,
+        revision=RevisionFacts(revision_id=revision_id, resource_id=res.resource_id),
     )

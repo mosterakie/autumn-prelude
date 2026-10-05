@@ -9,11 +9,13 @@
 
 实施顺序见《秋序_v1.0_功能点实施顺序》与《v1.1 评审修订建议》。
 
-当前进度：**A1–A7、B1–B12 与 C 核心/已实现模块并发回归完成**。
+当前进度：**A1–A7、B1–B12、C 核心/已实现模块并发回归与 D 纯权限判定完成**。
 **28 张表**、4 个基线迁移 + B8 留言请求身份增量迁移；空库 base→head、
 存量留言升级、`alembic check`、Catalog 与真实并发验收通过。
 节点、验证结果与后续边界见 [DEVELOPMENT.md](DEVELOPMENT.md)。
 数据契约的存储归属、枚举映射与有意偏离见 [DATA_CONTRACT.md](DATA_CONTRACT.md)。
+身份入口、角色矩阵与来源/上下文失效契约见 [POLICY_CONTRACT.md](POLICY_CONTRACT.md)。
+E 应用服务、HTTP 认证、Agent 与 Worker 的实际装配和执行尚待实现。
 
 ### 阶段 A 验收与评审修复
 

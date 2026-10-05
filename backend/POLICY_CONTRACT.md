@@ -12,7 +12,7 @@ step_up_expires_at、不可变 capabilities 和 scope_epoch。匿名身份不携
 | --- | --- | --- |
 | API（F） | Cookie 令牌哈希对应的当前会话、账号与 ACL epoch | 请求中的 role、owner_id、capabilities |
 | Agent（G） | Run.auth_session_id 对应的当前会话、账号与 ACL epoch | checkpoint 保存的旧身份、模型生成的工具参数 |
-| Worker（H） | Job 绑定的 Run / auth_session_id / actor_user_id 及当前记录 | 浏览器 Cookie 明文、Job JSON 内声称的权限 |
+| Worker（H） | Job 绑定的 Run / auth_session_id / actor_id 及当前记录 | 浏览器 Cookie 明文、Job JSON 内声称的权限 |
 
 站长完成升级后会话可能轮换。恢复入口先校验当前身份与原 Run 属于同一用户，
 再在受控事务中重新绑定会话；不得通过 checkpoint 或工具参数自行替换身份。
@@ -78,3 +78,48 @@ pending 父留言只允许作者本人回复，已审核父留言可按其公开
 Action.requires_step_up 由 Service 根据受控动作类型装配，不来自模型或 checkpoint。
 已过期 action 可以检查真实状态，但不能因此绕过 Service 的到期/状态/确认/双版本
 校验。权限判定成功不等同允许执行副作用。HTTP 和工具入口、提交事务均须重建并检查。
+
+## 来源与上下文失效（D6）
+
+RESUME_RUN、CONTINUE_RUN 和 EMIT_RUN_OUTPUT 先验证当前身份、运行归属和固定模式，再检查
+ContextFacts。缺少上下文、依赖闭包未完整装配、Run/模式不匹配、捕获的 epoch
+或执行 generation 与当前不一致，均返回 ACL_CONTEXT_INVALIDATED。
+Actor.scope_epoch 也须等于当前 epoch，防止旧身份快照混入新的执行。
+全站 epoch 变化先保守停止旧上下文，即使来源当前仍可读或撤回后再次公开。
+
+sources 包含全部实际送入模型的来源，包含历史回答、摘要和记忆的传递依赖，
+不局限于最终答案引用。依赖未找到资源/原稿、到期、删除、归档、ACL 变化，
+或公开来源的 publication/revision 不再匹配、AI 开关关闭，都阻止继续输出。
+即使 epoch 未递增，到期时间到达仍会实时阻断。
+SourceFacts 校验原稿与资源绑定；私人旧原稿不必是最新原稿，权限有效时仍可用。
+private chunk 后来对应已公开资源也不能改称 public；公开模式只能用公开投影片段。
+联网来源属于原 Run 用户，当前访问仍须站长升级验证；验证失效返回 STEP_UP_REQUIRED。
+引用必须匹配其持久 source_id，不能用新 publication 的正文替代已捕获来源。
+READ_RUN 允许读取合法归属的状态元数据，正文、引用和事件快照另走上下文/来源判定，
+不能因状态读取获准便原样返回全部历史文本。缺少被请求的父留言须保留
+requested_parent_id，不能把回复请求退化成顶层留言。
+
+执行器收到 ACL_CONTEXT_INVALIDATED 后的处理契约：
+
+1. 停止输出旧上下文文本，并尽力取消当前 provider stream。
+2. 用现有 source.invalidated 隐藏受影响消息，用 scope.changed 通知范围变化。
+3. 合法事务中结束旧执行阶段，Run 为 failed/cancelled，error_code 为
+   ACL_CONTEXT_INVALIDATED；error/done 使用既有 SSE 词表。
+4. 继续时重新鉴权、读取获准原始资料并重建提示词/历史/摘要/记忆，再创建新的
+   受控执行阶段。不能只修改 checkpoint 的 epoch/generation 数字后重用旧文本。
+5. 旧 provider 回调、Job 结果和 SSE 快照不得提交；同事务校验租约、generation、
+   当前权限后才可写正式结果。此前已发送字节无法收回。
+
+v1.1 实施建议中的 run.invalidated 在这里表示逻辑失效，不增加同名 SSE 事件
+或 Run 状态：数据库/接口已冻结的事件是 source.invalidated 与 scope.changed。
+目前 Run 尚无持久 execution generation 字段；本阶段只交付其纯值判定契约。
+G/H 仍须实现来源闭包装配、持久代际、流取消和联合事务闸门，不能把纯判定通过
+描述为已完成运行时安全。sources_complete 只能由实际完成装配的服务设置。
+
+## 验证与后续装配
+
+纯判定可在 Python -I -S（不加载第三方包）中导入并运行。测试在判定期间阻断
+文件/网络访问，并检查不读隐式时钟或环境；另比对纯词表与当前 DB 枚举。
+测试包括跨账号、升级/会话/冷却截止、能力回传、公开投影、来源撤回和旧代际。
+可选 D5 loader 本阶段没有需求，不创建空装配层；E 在短事务内直接装配事实。
+需要多表依赖装配时再增加独立只读 loader，核心不得依赖它。

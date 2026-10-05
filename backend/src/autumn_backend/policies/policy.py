@@ -14,12 +14,14 @@ from autumn_backend.policies.access import (
     verified_denial,
 )
 from autumn_backend.policies.actor import ActorContext
+from autumn_backend.policies.context import context_decision, source_decision
 from autumn_backend.policies.decision import Decision, DenialCode
 from autumn_backend.policies.facts import (
     ConversationMode,
     Operation,
     PolicyFacts,
     SearchMode,
+    SourceFacts,
     TargetKind,
 )
 
@@ -47,6 +49,10 @@ def _create_comment(actor: ActorContext, facts: PolicyFacts) -> Decision:
         if not publication_live(facts.resource, facts):
             return NOT_FOUND
     parent = facts.target
+    if facts.requested_parent_id is not None and (
+        parent is None or parent.object_id != facts.requested_parent_id
+    ):
+        return NOT_FOUND
     if parent is not None:
         if (
             parent.kind is not TargetKind.COMMENT
@@ -143,12 +149,15 @@ def evaluate(actor: ActorContext, facts: PolicyFacts) -> Decision:
             return _ai_in_conversation(actor, facts)
         case Operation.READ_RUN | Operation.CANCEL_RUN:
             return own_chat(actor, facts, TargetKind.RUN)
-        case Operation.RESUME_RUN:
+        case Operation.RESUME_RUN | Operation.CONTINUE_RUN | Operation.EMIT_RUN_OUTPUT:
             decision = own_chat(actor, facts, TargetKind.RUN)
             if not decision.allowed:
                 return decision
-            # 恢复不再次检查新请求冷却、额度或速率；运行执行槽由 Service 重新取得。
-            return verified_denial(actor, facts) or ALLOW
+            denial = verified_denial(actor, facts)
+            if denial is not None:
+                return denial
+            # 恢复必须检查旧上下文，但不重用新 ask 的冷却/额度/速率判断。
+            return context_decision(actor, facts)
         case Operation.SEARCH_PUBLIC_KNOWLEDGE:
             denial = verified_denial(actor, facts)
             if denial is not None:
@@ -198,14 +207,12 @@ def evaluate(actor: ActorContext, facts: PolicyFacts) -> Decision:
             if not decision.allowed:
                 return decision
             assert facts.target is not None
-            resource = facts.resource
-            if publication_live(resource, facts):
-                assert resource is not None and resource.publication is not None
-                if resource.publication.ai_enabled:
-                    return ALLOW
-            if facts.target.mode is ConversationMode.OWNER:
-                return private_resource(actor, facts)
-            return NOT_FOUND
+            if facts.source is None or facts.source.source_id != facts.target.object_id:
+                return NOT_FOUND
+            if isinstance(facts.source, SourceFacts):
+                if facts.target.resource_id != facts.source.resource_id:
+                    return NOT_FOUND
+            return source_decision(actor, facts, facts.source)
         case _ as unsupported:
             # 新增操作必须同时定义规则；strict 类型检查禁止遗漏枚举分支。
             assert_never(unsupported)
