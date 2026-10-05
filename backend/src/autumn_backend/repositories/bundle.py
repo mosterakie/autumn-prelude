@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autumn_backend.repositories.identity import SettingRepository, UserRepository
+from autumn_backend.repositories.quota import QuotaBucketRepository, QuotaReservationRepository
 from autumn_backend.repositories.runs import RunEventRepository, RunRepository
 
 
@@ -15,6 +16,8 @@ class Repositories:
     settings: SettingRepository
     runs: RunRepository
     run_events: RunEventRepository
+    quota_buckets: QuotaBucketRepository
+    quota_reservations: QuotaReservationRepository
 
     @classmethod
     def bind(cls, session: AsyncSession, access_guard: Callable[[], None]) -> "Repositories":
@@ -23,4 +26,6 @@ class Repositories:
             settings=SettingRepository(session, access_guard=access_guard),
             runs=RunRepository(session, access_guard=access_guard),
             run_events=RunEventRepository(session, access_guard=access_guard),
+            quota_buckets=QuotaBucketRepository(session, access_guard=access_guard),
+            quota_reservations=QuotaReservationRepository(session, access_guard=access_guard),
         )

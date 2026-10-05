@@ -19,3 +19,7 @@ class ConflictError(DomainError):
 
 class OptimisticLockError(ConflictError):
     code = "version_conflict"
+
+
+class QuotaExceededError(DomainError):
+    code = "quota_exceeded"
