@@ -17,6 +17,10 @@ class ConflictError(DomainError):
     code = "conflict"
 
 
+class IdempotencyConflictError(ConflictError):
+    code = "idempotency_conflict"
+
+
 class OptimisticLockError(ConflictError):
     code = "version_conflict"
 

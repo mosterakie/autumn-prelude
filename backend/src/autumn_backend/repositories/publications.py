@@ -27,6 +27,16 @@ class PublicationProjection:
 class PublicationRepository(ControlledMutableRepository[Publication]):
     model = Publication
 
+    async def current_for_resource(self, resource_id: UUID) -> Publication | None:
+        """调用方先锁 Resource；此方法只返回未撤回投影，公开读取仍走可见性过滤。"""
+        return (
+            await self.session.execute(
+                select(Publication)
+                .where(Publication.resource_id == resource_id, Publication.revoked_at.is_(None))
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+
     async def _resource(
         self, resource_id: UUID, expected_version: int | None, expected_acl_version: int
     ) -> Resource:

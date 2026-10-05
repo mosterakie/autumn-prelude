@@ -5,10 +5,15 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autumn_backend.repositories.actions import ActionRepository
 from autumn_backend.repositories.audit import AuditEventRepository
 from autumn_backend.repositories.comments import CommentRepository
 from autumn_backend.repositories.conversations import ConversationRepository
-from autumn_backend.repositories.identity import SettingRepository, UserRepository
+from autumn_backend.repositories.identity import (
+    AuthSessionRepository,
+    SettingRepository,
+    UserRepository,
+)
 from autumn_backend.repositories.jobs import JobRepository
 from autumn_backend.repositories.memories import MemoryRepository
 from autumn_backend.repositories.provider_calls import ProviderCallRepository
@@ -21,6 +26,8 @@ from autumn_backend.repositories.runs import RunEventRepository, RunRepository
 @dataclass(frozen=True, slots=True)
 class Repositories:
     users: UserRepository
+    auth_sessions: AuthSessionRepository
+    actions: ActionRepository
     settings: SettingRepository
     runs: RunRepository
     run_events: RunEventRepository
@@ -39,6 +46,8 @@ class Repositories:
     def bind(cls, session: AsyncSession, access_guard: Callable[[], None]) -> "Repositories":
         return cls(
             users=UserRepository(session, access_guard=access_guard),
+            auth_sessions=AuthSessionRepository(session, access_guard=access_guard),
+            actions=ActionRepository(session, access_guard=access_guard),
             settings=SettingRepository(session, access_guard=access_guard),
             runs=RunRepository(session, access_guard=access_guard),
             run_events=RunEventRepository(session, access_guard=access_guard),

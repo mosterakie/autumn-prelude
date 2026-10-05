@@ -1,0 +1,110 @@
+"""E1 所需的明确请求动作；预览、确认及其它动作由 E7 扩展。"""
+
+from datetime import timedelta
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert
+
+from autumn_backend.db.enums import ActionAuthorizationKind, ActionStatus, ActionType
+from autumn_backend.db.models import Action
+from autumn_backend.errors import ConflictError, IdempotencyConflictError, InvalidInputError
+from autumn_backend.repositories.base import ControlledMutableRepository
+from autumn_backend.repositories.constraints import database_errors
+from autumn_backend.repositories.result import Creation
+
+
+class ActionRepository(ControlledMutableRepository[Action]):
+    model = Action
+    transition_fields = frozenset({"executed_at", "result"})
+
+    async def begin_explicit_publication(
+        self,
+        *,
+        actor_id: UUID,
+        auth_session_id: UUID,
+        action_type: ActionType,
+        resource_id: UUID,
+        expected_version: int,
+        expected_acl_version: int,
+        idempotency_key: str,
+        parameters: dict[str, Any],
+        parameters_hash: str,
+    ) -> Creation[Action]:
+        if action_type not in (ActionType.PUBLISH, ActionType.REVOKE):
+            raise InvalidInputError("此入口只接受发布或撤回")
+        with database_errors():
+            action = (
+                await self.session.execute(
+                    insert(Action)
+                    .values(
+                        actor_id=actor_id,
+                        auth_session_id=auth_session_id,
+                        type=action_type,
+                        target_resource_id=resource_id,
+                        expected_version=expected_version,
+                        expected_acl_version=expected_acl_version,
+                        idempotency_key=idempotency_key,
+                        parameters=parameters,
+                        parameters_hash=parameters_hash,
+                        authorization_kind=ActionAuthorizationKind.EXPLICIT_REQUEST,
+                        status=ActionStatus.READY,
+                        requires_confirmation=False,
+                        confirmed_at=func.clock_timestamp(),
+                        expires_at=func.clock_timestamp() + timedelta(minutes=15),
+                    )
+                    .on_conflict_do_nothing(constraint="uq_actions_actor_id_idempotency_key")
+                    .returning(Action)
+                )
+            ).scalar_one_or_none()
+        if action is not None:
+            return Creation(action, True)
+        action = (
+            await self.session.execute(
+                select(Action)
+                .where(Action.actor_id == actor_id, Action.idempotency_key == idempotency_key)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if action is None:
+            raise ConflictError("操作身份读取失败")
+        if (
+            action.type is not action_type
+            or action.target_resource_id != resource_id
+            or action.expected_version != expected_version
+            or action.expected_acl_version != expected_acl_version
+            or action.parameters_hash != parameters_hash
+            or action.parameters != parameters
+            or action.authorization_kind is not ActionAuthorizationKind.EXPLICIT_REQUEST
+            or action.requires_confirmation
+        ):
+            raise IdempotencyConflictError("幂等键已用于不同操作")
+        return Creation(action, False)
+
+    async def succeed_explicit(self, action_id: UUID, result: dict[str, Any]) -> Action:
+        with database_errors():
+            action = (
+                await self.session.execute(
+                    update(Action)
+                    .where(
+                        Action.id == action_id,
+                        Action.status == ActionStatus.READY,
+                        Action.authorization_kind == ActionAuthorizationKind.EXPLICIT_REQUEST,
+                        Action.requires_confirmation.is_(False),
+                        Action.expires_at > func.clock_timestamp(),
+                    )
+                    .values(
+                        status=ActionStatus.SUCCEEDED,
+                        executed_at=func.clock_timestamp(),
+                        result=result,
+                        version=Action.version + 1,
+                    )
+                    .returning(Action)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one_or_none()
+        if action is None:
+            raise ConflictError("操作已过期或状态已变化")
+        return action

@@ -1,9 +1,10 @@
 """事务内的数据访问能力；提交与回滚只由 UoW 执行。"""
 
 from collections.abc import Callable
+from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autumn_backend.db.base import Base
@@ -30,6 +31,11 @@ class RepositoryBase:
         if self._access_guard is not None:
             self._access_guard()
         return self._session
+
+    async def database_time(self) -> datetime:
+        """读取数据库实际时间，避免事务开始时间被行锁等待固定。"""
+        value: datetime = (await self.session.execute(select(func.clock_timestamp()))).scalar_one()
+        return value
 
 
 class UUIDRepository[T: Base](RepositoryBase):
