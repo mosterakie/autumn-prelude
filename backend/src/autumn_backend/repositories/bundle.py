@@ -16,6 +16,7 @@ from autumn_backend.repositories.identity import (
     UserRepository,
 )
 from autumn_backend.repositories.jobs import JobRepository
+from autumn_backend.repositories.knowledge import KnowledgeRepository
 from autumn_backend.repositories.memories import MemoryRepository
 from autumn_backend.repositories.messages import MessageRepository
 from autumn_backend.repositories.provider_calls import ProviderCallRepository
@@ -47,6 +48,7 @@ class Repositories:
     messages: MessageRepository
     rate_limits: RateLimitRepository
     files: FileRepository
+    knowledge: KnowledgeRepository
 
     @classmethod
     def bind(cls, session: AsyncSession, access_guard: Callable[[], None]) -> "Repositories":
@@ -70,4 +72,5 @@ class Repositories:
             messages=MessageRepository(session, access_guard=access_guard),
             rate_limits=RateLimitRepository(session, access_guard=access_guard),
             files=FileRepository(session, access_guard=access_guard),
+            knowledge=KnowledgeRepository(session, access_guard=access_guard),
         )

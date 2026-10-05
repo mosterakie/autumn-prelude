@@ -21,6 +21,7 @@ dependencies = [
     "python-json-logger>=3.2,<4.0",
     # Windows 没有系统 IANA 时区库，日额度仍须按同一时区规则切分。
     "tzdata>=2025.2,<2027.0",
+    "pypdf>=6.0,<7.0",
     # A5 起为硬依赖：knowledge_indexes.embedding 是 pgvector 的 Vector 列。
     "pgvector>=0.3.6,<1.0",
 ]

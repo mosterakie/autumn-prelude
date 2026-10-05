@@ -23,6 +23,10 @@ class RevisionDraft:
     tags: tuple[str, ...] = ()
     content_format: ContentFormat = ContentFormat.MARKDOWN
     linked_source_id: UUID | None = None
+    file_object_key: str | None = None
+    file_sha256: str | None = None
+    media_type: str | None = None
+    byte_size: int | None = None
 
 
 class ResourceRepository(VersionedRepository[Resource]):
@@ -73,6 +77,10 @@ class ResourceRepository(VersionedRepository[Resource]):
             tags=list(draft.tags),
             content_format=draft.content_format,
             linked_source_id=draft.linked_source_id,
+            file_object_key=draft.file_object_key,
+            file_sha256=draft.file_sha256,
+            media_type=draft.media_type,
+            byte_size=draft.byte_size,
         )
         self.session.add(revision)
         await self.session.flush()

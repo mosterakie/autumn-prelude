@@ -37,6 +37,7 @@ coverage/
 *.sqlite3
 *.db
 /backups/
+/work/
 
 # Local editors and OS
 .vscode/

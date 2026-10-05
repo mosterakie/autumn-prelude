@@ -39,3 +39,37 @@ cleanup_orphans 接受明确时区时钟，仅移除超过 24 小时且没有数
 已登记文件由任务流程收敛，不按年龄删除。LocalObjectStore 限制规范对象 key、解析后路径
 必须位于 storage_root 内；通过 ContextVar 阻止在活跃 UoW 内调用对象存储。
 基础验收 3 项：上传/转正/重试/权限、删除失败重试与立即阻断、孤儿回收保留登记对象。
+
+## E6 知识库与来源
+
+KnowledgeService.ingest_file / ingest_web 将提取结果落入不可变 resource_versions，并登记
+knowledge.ingest 作业。文件版本保留原文件摘要、MIME、大小和对象 key；重复导入复用原资源。
+PDF 用 pypdf 提取可选中文本，DOCX 用 ZIP/XML 读取段落，拒绝实体、扫描空文本和旧 DOC。
+私人文件索引保留页码/段落；公开索引始终使用 publication 的实际白名单投影及字段内偏移，
+不会为方便索引而读取原文件或完整私人正文。发布旧版本后编辑新原稿不会改写已发布投影。
+
+SafeWebFetcher 仅接受公开 HTTP(S)，禁止 URL 凭据/本地 IP/非标准端口；逐跳解析并检查
+全部地址，再固定连接到已验证的公网 IP（HTTPS 仍验证原主机证书），最多 3 次跳转、
+2 MB 响应、无 Cookie/代理/登录。提取静态 HTML/纯文本，不运行脚本；正文没有可提取文字
+时拒绝。DNS 使用系统解析器；网络超时和 worker 预算由后续运行器统一控制。
+
+request_index / build_index 锁定当前站长、资源双版本、任务有效 lease 和嵌入模型身份；
+提取/分块/嵌入在 UoW 外，返回后重新复核。新 generation 与 chunks 建完后，旧索引退役、
+新索引激活、Job.finish 同事务。sync_publication 承接 E1 的通知，过时通知只标记 superseded；
+有效通知退役旧公开索引，再排队当前投影或完成撤回。实际嵌入与 rerank 供应商适配留在 I。
+端口强制 1024 维、有限非零向量，查询限定 provider/model/dimension，不混用模型。
+
+retrieve 先在 SQL 中选择当前允许的 active/ready 索引，锁资源后重查，再对这一范围执行
+精确向量排序。公开模式只查未撤回且 ai_enabled 的投影；站长私人模式只查本人当前原稿。
+可选 rerank 在 UoW 外，返回 ID 必须来自候选；末端再检查当前范围、Run version 与 ACL。
+返回给模型的全部片段登记 run_sources，绑定确切 revision/publication/ACL/index/chunk/locator。
+record_web_sources 仅供获准站长运行登记实际联网输入；citation 复核 Run 归属与当前来源权限。
+
+capture_dependencies 返回实际选入的历史消息、摘要、记忆文本，并复制/验证其所有来源依赖。
+摘要追踪截至 upto_message_seq 的关联 runs，记忆追踪 origin_run / origin_message；缺失来源
+manifest 或失效权限拒绝继续。服务生成 schema_version=1 的完整 manifest，不接收客户端的
+“完整”声明。G 必须仅使用这些入口返回的文本，并在每次派发前再次验证完整闭包；E 的端口
+不是完整 LangGraph 上下文运行器。当前用 Run.version 做乐观执行检查，正式代际 fencing 在 E8 接入。
+
+基础验收 4 项：私人/公开隔离与撤回引用、DOCX/网页版本与无 OCR、嵌入期间撤回丢弃结果、
+历史来源闭包复制后重新失效；外部端口测试同时断言 active_uows=0。
