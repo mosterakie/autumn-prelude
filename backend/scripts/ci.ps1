@@ -95,9 +95,9 @@ try {
 
     Invoke-Step "empty database base -> head" { & $alembic upgrade head }
     Invoke-Step "alembic check" { & $alembic check }
-    Invoke-Step "pytest" { & $python -m pytest -q }
-    Invoke-Step "ruff check" { & $python -m ruff check . --output-format=concise }
-    Invoke-Step "ruff format --check" { & $python -m ruff format --check . }
+    Invoke-Step "pytest" { & $python -m pytest -q -p no:cacheprovider }
+    Invoke-Step "ruff check" { & $python -m ruff check src tests scripts alembic --output-format=concise }
+    Invoke-Step "ruff format --check" { & $python -m ruff format --check src tests scripts alembic }
     Invoke-Step "mypy" { & $python -m mypy }
     Invoke-Step "constraint probe" { & $python scripts\probe_constraints.py }
 }

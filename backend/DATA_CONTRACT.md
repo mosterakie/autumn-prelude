@@ -151,7 +151,7 @@
 | 生产配置拒绝开发默认密钥；会话轮换 CHECK 兼容清理 | 见 `config.py` 与 `auth_sessions` 的单向蕴含约束 |
 | 空库 base→head 升级成功 | `scripts/verify_fresh_migration.py` |
 | Catalog 明确核对 UNIQUE / CHECK / FK / Partial Index / 触发器 | `tests/integration/test_catalog_contract.py` |
-| 最小 PostgreSQL 测试 CI | `scripts/ci.ps1`（本地闸门）+ `ci/github-actions-backend.yml`（待搬到仓库根 `.github/workflows/`）；用 pgvector 官方镜像，先空库 `upgrade head` 再 `alembic check` 再测试。闸门已抓出过真实问题（新脚本的格式违规），说明它确实在跑而不是摆设 |
+| 最小 PostgreSQL 测试 CI | `scripts/ci.ps1`（本地闸门）+ 仓库根 `.github/workflows/backend.yml`；用 pgvector 官方镜像，扩展建在测试库内，先空库 `upgrade head` 再 `alembic check` 再执行 unit / integration / concurrency |
 
 ### `.ps1` 必须是纯 ASCII
 

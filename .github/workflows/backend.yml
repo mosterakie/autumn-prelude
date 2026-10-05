@@ -1,8 +1,6 @@
 # 后端阶段闸门（GitHub Actions）。
 #
-# 使用方法：把本文件复制到仓库根的 `.github/workflows/backend.yml`。
-# 之所以放在 backend/ 下，是因为本阶段的改动范围限定在 backend/；
-# GitHub 只识别仓库根的 `.github/workflows/`，因此需要一次性搬移。
+# 位于仓库根的 .github/workflows/，提交到远端后 GitHub 才执行。
 #
 # 与本地 `backend/scripts/ci.ps1` 等价：同一条闸门路径，避免"本地绿、CI 红"。
 # 关键点：
@@ -48,11 +46,8 @@ jobs:
           --health-retries 20
 
     env:
-      AUTUMN_ENVIRONMENT: test
       AUTUMN_DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5442/autumn_ci
       AUTUMN_TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5442/autumn_ci
-      AUTUMN_SESSION_SECRET: ci-only-session-secret-not-used-in-production
-      AUTUMN_CSRF_SECRET: ci-only-csrf-secret-not-used-in-production
       PYTHONUTF8: "1"
 
     steps:
@@ -72,7 +67,9 @@ jobs:
       - name: 建 CI 数据库并启用 pgvector
         run: |
           PGPASSWORD=postgres psql -h 127.0.0.1 -p 5442 -U postgres -d postgres \
-            -c 'CREATE DATABASE autumn_ci' -c 'CREATE EXTENSION IF NOT EXISTS vector'
+            -v ON_ERROR_STOP=1 -c 'CREATE DATABASE autumn_ci'
+          PGPASSWORD=postgres psql -h 127.0.0.1 -p 5442 -U postgres -d autumn_ci \
+            -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS vector'
 
       - name: 空库 base -> head
         run: alembic upgrade head
@@ -80,17 +77,17 @@ jobs:
       - name: alembic check（不覆盖 CHECK 与触发器）
         run: alembic check
 
-      - name: pytest（unit / integration）
-        run: python -m pytest -q
+      - name: pytest（unit / integration / concurrency）
+        run: python -m pytest -q -p no:cacheprovider --junitxml=pytest.xml
 
       - name: 约束探针（原生 SQL 独立复核）
         run: python scripts/probe_constraints.py
 
       - name: ruff check
-        run: python -m ruff check . --output-format=concise
+        run: python -m ruff check src tests scripts alembic --output-format=concise
 
       - name: ruff format --check
-        run: python -m ruff format --check .
+        run: python -m ruff format --check src tests scripts alembic
 
       - name: mypy
         run: python -m mypy
