@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
 from autumn_backend.db.models import Comment
-from autumn_backend.errors import ConflictError, InvalidInputError
+from autumn_backend.errors import ConflictError, IdempotencyConflictError, InvalidInputError
 from autumn_backend.repositories.base import VersionedRepository
 from autumn_backend.repositories.constraints import database_errors
 from autumn_backend.repositories.result import Creation
@@ -34,10 +34,22 @@ def request_hash(resource_id: UUID | None, parent_id: UUID | None, body: str) ->
 class CommentRepository(VersionedRepository[Comment]):
     model = Comment
 
+    async def by_client_id(
+        self, author_id: UUID, client_id: UUID, *, lock: bool = False
+    ) -> Comment | None:
+        statement = select(Comment).where(
+            Comment.author_id == author_id, Comment.client_id == client_id
+        )
+        if lock:
+            statement = statement.with_for_update()
+        return (
+            await self.session.execute(statement.execution_options(populate_existing=True))
+        ).scalar_one_or_none()
+
     @staticmethod
     def _replay(comment: Comment, digest: str) -> Creation[Comment]:
         if comment.request_hash != digest:
-            raise ConflictError("留言标识已用于不同请求")
+            raise IdempotencyConflictError("留言标识已用于不同请求")
         return Creation(comment, False)
 
     async def create_or_get(

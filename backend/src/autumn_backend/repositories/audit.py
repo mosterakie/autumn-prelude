@@ -25,6 +25,7 @@ class AuditMetadata:
     publication_id: UUID | None = None
     run_id: UUID | None = None
     job_id: UUID | None = None
+    comment_id: UUID | None = None
 
     def to_dict(self) -> dict[str, Any]:
         values: dict[str, Any] = {}
@@ -46,7 +47,7 @@ class AuditMetadata:
             ):
                 raise InvalidInputError("审计字段名无效")
             values["changed_fields"] = list(self.changed_fields)
-        for name in ("publication_id", "run_id", "job_id"):
+        for name in ("publication_id", "run_id", "job_id", "comment_id"):
             identifier = getattr(self, name)
             if identifier is not None:
                 values[name] = str(identifier)
