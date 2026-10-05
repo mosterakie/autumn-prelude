@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 
 from autumn_backend.db.enums import ContentFormat, ConversationMode, ResourceKind
 from autumn_backend.db.models import load_all_models
+from tests.integration.service_cases import e_case  # noqa: F401
 
 
 @pytest.fixture(scope="session")

@@ -39,6 +39,23 @@ class ProviderCallRepository(ControlledMutableRepository[ProviderCall]):
         }
     )
 
+    async def model_was_dispatched(self, run_id: UUID) -> bool:
+        return bool(
+            (
+                await self.session.execute(
+                    select(ProviderCall.id)
+                    .where(
+                        ProviderCall.run_id == run_id,
+                        ProviderCall.purpose.in_(
+                            (ProviderCallPurpose.CHAT, ProviderCallPurpose.TOOL)
+                        ),
+                        ProviderCall.started_at.is_not(None),
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+        )
+
     async def prepare(
         self,
         *,

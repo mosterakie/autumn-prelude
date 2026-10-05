@@ -7,7 +7,8 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from autumn_backend.db.enums import QuotaReservationStatus as Status
-from autumn_backend.db.models import QuotaBucket, QuotaReservation
+from autumn_backend.db.enums import RunStatus
+from autumn_backend.db.models import QuotaBucket, QuotaReservation, Run
 from autumn_backend.errors import (
     ConflictError,
     InvalidInputError,
@@ -21,6 +22,16 @@ from autumn_backend.repositories.result import Creation
 
 class QuotaBucketRepository(ControlledMutableRepository[QuotaBucket]):
     model = QuotaBucket
+
+    async def for_window(self, user_id: UUID, start: datetime) -> QuotaBucket | None:
+        return (
+            await self.session.execute(
+                select(QuotaBucket).where(
+                    QuotaBucket.user_id == user_id,
+                    QuotaBucket.window_start == start,
+                )
+            )
+        ).scalar_one_or_none()
 
     async def get_or_create_for_update(
         self,
@@ -65,6 +76,25 @@ class QuotaBucketRepository(ControlledMutableRepository[QuotaBucket]):
 
 class QuotaReservationRepository(ControlledMutableRepository[QuotaReservation]):
     model = QuotaReservation
+
+    async def cleanup_candidates(self, before: datetime, *, limit: int = 100) -> tuple[UUID, ...]:
+        if before.tzinfo is None or not 1 <= limit <= 100:
+            raise InvalidInputError("清理范围无效")
+        return tuple(
+            (
+                await self.session.scalars(
+                    select(QuotaReservation.run_id)
+                    .join(Run, Run.id == QuotaReservation.run_id)
+                    .where(
+                        QuotaReservation.status == Status.RESERVED,
+                        QuotaReservation.created_at < before,
+                        Run.status.in_((RunStatus.FAILED, RunStatus.CANCELLED)),
+                    )
+                    .order_by(QuotaReservation.created_at, QuotaReservation.id)
+                    .limit(limit)
+                )
+            ).all()
+        )
 
     async def for_run(self, run_id: UUID, *, lock: bool = False) -> QuotaReservation | None:
         statement = select(QuotaReservation).where(QuotaReservation.run_id == run_id)
