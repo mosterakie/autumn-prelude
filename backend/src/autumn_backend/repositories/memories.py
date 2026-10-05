@@ -2,18 +2,34 @@
 
 from uuid import UUID
 
-from sqlalchemy import func
+from sqlalchemy import func, or_, select
 
 from autumn_backend.db.enums import MemoryKind
 from autumn_backend.db.models import Memory, Run, User
 from autumn_backend.errors import ConflictError, InvalidInputError
 from autumn_backend.repositories.base import VersionedRepository
 from autumn_backend.repositories.constraints import database_errors
+from autumn_backend.repositories.pagination import Page, fetch_page
 
 
 class MemoryRepository(VersionedRepository[Memory]):
     model = Memory
     mutable_fields = frozenset({"content_text", "kind", "deleted_at"})
+
+    async def for_user(
+        self, user_id: UUID, *, limit: int = 20, cursor: str | None = None
+    ) -> Page[Memory]:
+        return await fetch_page(
+            self.session,
+            Memory,
+            select(Memory).where(
+                Memory.user_id == user_id,
+                Memory.deleted_at.is_(None),
+                or_(Memory.expires_at.is_(None), Memory.expires_at > func.clock_timestamp()),
+            ),
+            limit=limit,
+            cursor=cursor,
+        )
 
     async def create(
         self,

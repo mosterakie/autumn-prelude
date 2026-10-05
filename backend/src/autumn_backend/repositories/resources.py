@@ -10,6 +10,7 @@ from autumn_backend.db.models import Resource, ResourceVersion
 from autumn_backend.errors import ConflictError, OptimisticLockError
 from autumn_backend.repositories.base import VersionedRepository
 from autumn_backend.repositories.constraints import database_errors
+from autumn_backend.repositories.pagination import Page, fetch_page
 from autumn_backend.repositories.publications import PublicationRepository
 
 
@@ -27,6 +28,17 @@ class RevisionDraft:
 class ResourceRepository(VersionedRepository[Resource]):
     model = Resource
     mutable_fields = frozenset({"current_revision_id", "slug", "retention_policy_id", "expires_at"})
+
+    async def for_owner(
+        self, owner_id: UUID, *, limit: int = 20, cursor: str | None = None
+    ) -> Page[Resource]:
+        return await fetch_page(
+            self.session,
+            Resource,
+            select(Resource).where(Resource.owner_id == owner_id, Resource.deleted_at.is_(None)),
+            limit=limit,
+            cursor=cursor,
+        )
 
     async def create(
         self, *, owner_id: UUID, kind: ResourceKind, slug: str, draft: RevisionDraft

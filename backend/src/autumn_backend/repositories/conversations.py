@@ -2,18 +2,32 @@
 
 from uuid import UUID
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 
 from autumn_backend.db.enums import ConversationMode
 from autumn_backend.db.models import Conversation
 from autumn_backend.errors import ConflictError
 from autumn_backend.repositories.base import VersionedRepository
 from autumn_backend.repositories.constraints import database_errors
+from autumn_backend.repositories.pagination import Page, fetch_page
 
 
 class ConversationRepository(VersionedRepository[Conversation]):
     model = Conversation
     mutable_fields = frozenset({"title", "deleted_at"})
+
+    async def for_user(
+        self, user_id: UUID, *, limit: int = 20, cursor: str | None = None
+    ) -> Page[Conversation]:
+        return await fetch_page(
+            self.session,
+            Conversation,
+            select(Conversation).where(
+                Conversation.user_id == user_id, Conversation.deleted_at.is_(None)
+            ),
+            limit=limit,
+            cursor=cursor,
+        )
 
     async def create(
         self, *, user_id: UUID, mode: ConversationMode, title: str = ""
