@@ -37,6 +37,6 @@ def install_request_middleware(app: FastAPI) -> None:
         except DomainError as error:
             response = domain_response(request, error)
         response.headers["X-Request-ID"] = request.state.request_id
-        if request.url.path.startswith("/api/auth/"):
+        if request.url.path.startswith("/api/") and not request.url.path.startswith("/api/public/"):
             response.headers["Cache-Control"] = "no-store"
         return response

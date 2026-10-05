@@ -19,6 +19,61 @@ class ActionRepository(ControlledMutableRepository[Action]):
     model = Action
     transition_fields = frozenset({"executed_at", "result"})
 
+    async def by_actor_key(self, actor_id: UUID, key: str) -> Action | None:
+        return (
+            await self.session.execute(
+                select(Action)
+                .where(
+                    Action.actor_id == actor_id,
+                    Action.idempotency_key == key,
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+
+    async def begin_explicit_content(
+        self,
+        *,
+        actor_id: UUID,
+        auth_session_id: UUID,
+        action_type: ActionType,
+        resource_id: UUID,
+        key: str,
+        parameters: dict[str, Any],
+        digest: str,
+        expected_version: int | None,
+        expected_acl_version: int | None,
+    ) -> Action:
+        if action_type not in {
+            ActionType.CREATE_RESOURCE,
+            ActionType.UPDATE_RESOURCE,
+            ActionType.DELETE,
+        }:
+            raise InvalidInputError("不支持的原稿操作")
+        # 调用方持有 actor 的 User 行锁并已查过 key；DB 唯一约束仍做最终仲裁。
+        now = await self.database_time()
+        action = Action(
+            actor_id=actor_id,
+            auth_session_id=auth_session_id,
+            type=action_type,
+            target_resource_id=resource_id,
+            idempotency_key=key,
+            parameters=parameters,
+            parameters_hash=digest,
+            expected_version=expected_version,
+            expected_acl_version=expected_acl_version,
+            status=ActionStatus.READY,
+            requires_confirmation=False,
+            authorization_kind=ActionAuthorizationKind.EXPLICIT_REQUEST,
+            confirmed_at=now,
+            expires_at=now + timedelta(minutes=15),
+        )
+        with database_errors():
+            self.session.add(action)
+            await self.session.flush()
+        return action
+
     async def propose(
         self,
         *,

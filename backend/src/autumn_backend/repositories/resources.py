@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, true
 
 from autumn_backend.db.enums import ContentFormat, ResourceKind
 from autumn_backend.db.models import Resource, ResourceVersion
@@ -34,12 +34,42 @@ class ResourceRepository(VersionedRepository[Resource]):
     mutable_fields = frozenset({"current_revision_id", "slug", "retention_policy_id", "expires_at"})
 
     async def for_owner(
-        self, owner_id: UUID, *, limit: int = 20, cursor: str | None = None
+        self,
+        owner_id: UUID,
+        *,
+        limit: int = 20,
+        cursor: str | None = None,
+        kind: ResourceKind | None = None,
     ) -> Page[Resource]:
         return await fetch_page(
             self.session,
             Resource,
-            select(Resource).where(Resource.owner_id == owner_id, Resource.deleted_at.is_(None)),
+            select(Resource).where(
+                Resource.owner_id == owner_id,
+                Resource.deleted_at.is_(None),
+                (Resource.kind == kind) if kind else true(),
+                (Resource.expires_at.is_(None)) | (Resource.expires_at > func.clock_timestamp()),
+            ),
+            limit=limit,
+            cursor=cursor,
+        )
+
+    async def revision(self, resource_id: UUID, revision_id: UUID) -> ResourceVersion | None:
+        return (
+            await self.session.execute(
+                select(ResourceVersion).where(
+                    ResourceVersion.resource_id == resource_id, ResourceVersion.id == revision_id
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def revisions(
+        self, resource_id: UUID, *, limit: int = 20, cursor: str | None = None
+    ) -> Page[ResourceVersion]:
+        return await fetch_page(
+            self.session,
+            ResourceVersion,
+            select(ResourceVersion).where(ResourceVersion.resource_id == resource_id),
             limit=limit,
             cursor=cursor,
         )

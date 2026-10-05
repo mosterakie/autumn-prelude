@@ -23,10 +23,14 @@ from autumn_backend import __version__
 from autumn_backend.api.auth import router as auth_router
 from autumn_backend.api.errors import install_error_handlers
 from autumn_backend.api.middleware import install_request_middleware
+from autumn_backend.api.resources import router as resource_router
 from autumn_backend.auth.service import AuthService
 from autumn_backend.config import Settings, get_settings
 from autumn_backend.db.session import UnitOfWorkFactory, create_engine, create_session_factory
 from autumn_backend.observability.logging import configure_logging, get_logger
+from autumn_backend.services.resources import ResourceService
+from autumn_backend.services.storage import StorageService
+from autumn_backend.storage.local import LocalObjectStore
 
 logger = get_logger(__name__)
 
@@ -45,6 +49,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.session_factory = create_session_factory(engine)
         app.state.uows = UnitOfWorkFactory(app.state.session_factory)
         app.state.auth = AuthService(app.state.uows, settings)
+        app.state.storage = StorageService(app.state.uows, LocalObjectStore(settings.storage_root))
+        app.state.resources = ResourceService(app.state.uows, app.state.storage)
 
     logger.info(
         "app.startup",
@@ -84,6 +90,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     install_error_handlers(app)
     install_request_middleware(app)
     app.include_router(auth_router)
+    app.include_router(resource_router)
 
     @app.get("/healthz", tags=["health"], summary="存活探针")
     async def healthz() -> dict[str, str]:

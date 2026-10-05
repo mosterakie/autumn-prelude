@@ -43,7 +43,7 @@ GitHub CI 文件已放在仓库根，但本轮不推送，尚未触发远端运�
 Repository 只执行事务内的数据库操作，不自行提交。不在数据库事务内执行外部模型、搜索、邮件或对象存储 I/O。
 UoW 工厂可并发共享，实例不可共享或复用。显式 commit/rollback 后应退出当前上下文并创建新 UoW。
 
-E1–E8 已完成；用户已确认继续 F API，当前 F1–F3 已完成，F4–F8 开发中。
+E1–E8 已完成；用户已确认继续 F API，当前 F1–F4 已完成，F5–F8 开发中。
 留言提交、一级回复、重试和错误边界见 [COMMENT_SERVICE.md](COMMENT_SERVICE.md)。
 HTTP 认证与首次验证冷却写入已交付；内容/设置/聊天 API、真实外部调用、Agent 与 worker 业务执行继续按 F/G/H 交付。
 E8 已提供正式结果与 lease/代际/权限同事务的提交闸门；H 仍负责实际运行循环、heartbeat、失败分类、重试与具体业务 handler。
@@ -129,3 +129,11 @@ E8 已提供正式结果与 lease/代际/权限同事务的提交闸门；H 仍�
 - 显式可信 Origin 的凭据 CORS；UTC 输出使用 Z。应用 local/dev/prod lifespan 接入认证，test 只使用显式独立 UoW 注入。
 - 3 项真实 HTTP/数据库基础流程与 9 项受影响配置核对，共 12 通过、0 跳过；Ruff、87 源文件 mypy 与 diff 检查通过。没有全量回归、没有业务库写入。
 - 每个资源/会话 service 仍需复核当前权限与 step-up，入口快照不替代业务授权。未发送真实邮件、未运行业务库站长引导；本地提交，不推送。
+
+## F4 私人资源接口（2026-10-06）
+
+- articles/bookmarks 创建与编辑、双版本软删除、类型过滤、复合游标列表/版本历史、确切版本文件读取。API 只依赖应用服务，不直接读取 ORM。
+- 同一账号的幂等写请求通过 User 锁与 Action 唯一约束仲裁。新增显式 create_resource/update_resource 动作类型，迁移 a7c19e23b806 扩展 CHECK；28 表不变。成功重试不追加版本/动作，原稿修改不改变现行公开投影。
+- 删除立即撤回、递增 ACL/epoch、阻断检索，文件 pending_delete 与异步清理同事务入队；默认永久保留，主动删除不会同步执行外部 I/O。
+- 3 项数据库/HTTP 基础流程与 2 项 CHECK Catalog 核对，共 5 通过、0 跳过。覆盖幂等/CAS、私人范围与跨对象版本、入口 CSRF、真实分页和删除。Ruff、mypy、Alembic check 与迁移回退/再升级通过。
+- 所有私人 API no-store。本文不把尚未运行的清理 handler 当作物理清理完成；具体任务在 H 接入。本地提交，不推送。

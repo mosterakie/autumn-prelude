@@ -294,6 +294,8 @@ class ActionType(enum.StrEnum):
     """
 
     PUBLISH = "publish"
+    CREATE_RESOURCE = "create_resource"
+    UPDATE_RESOURCE = "update_resource"
     REVOKE = "revoke"
     DELETE = "delete"
     UPDATE_SETTINGS = "update_settings"
