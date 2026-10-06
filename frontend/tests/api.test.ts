@@ -8,6 +8,19 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe("FastAPI transport", () => {
+  it("does not initialize the demo adapter on API pages in older browsers", async () => {
+    vi.stubGlobal("structuredClone", undefined);
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ data: { user: null } })),
+        ),
+    );
+    const { api } = await import("../src/lib/api");
+    expect(await api("/auth/me")).toEqual({ user: null });
+  });
   it("sends cookies, CSRF and the original idempotency key", async () => {
     const fetcher = vi
       .fn()

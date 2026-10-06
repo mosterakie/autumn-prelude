@@ -354,8 +354,23 @@ svg {
   gap: 7px;
   color: var(--red);
 }
-.mobile-menu {
+.mobile-menu,
+.header-menu {
   display: none;
+}
+.header-menu summary {
+  list-style: none;
+  cursor: pointer;
+  min-width: 44px;
+  min-height: 44px;
+}
+.header-menu summary::-webkit-details-marker,
+.menu-close-icon,
+.header-menu[open] .menu-open-icon {
+  display: none;
+}
+.header-menu[open] .menu-close-icon {
+  display: block;
 }
 .header-actions .button {
   padding: 8px 17px;
@@ -1927,6 +1942,9 @@ input[type="radio"] {
   .mobile-menu {
     display: inline-flex;
   }
+  .header-menu {
+    display: block;
+  }
   .nav {
     display: none;
     position: absolute;
@@ -1939,7 +1957,7 @@ input[type="radio"] {
     border-radius: 16px;
     box-shadow: 0 8px 20px #4b301314;
   }
-  .nav.open {
+  .header-menu[open] .mobile-nav {
     display: flex;
     flex-wrap: wrap;
     justify-content: center;

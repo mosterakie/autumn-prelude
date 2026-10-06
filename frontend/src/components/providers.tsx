@@ -8,6 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { usePathname } from "next/navigation";
 import {
   QueryClient,
   QueryClientProvider,
@@ -36,7 +37,8 @@ export function useSession() {
   return value;
 }
 function SessionProvider({ children }: { children: ReactNode }) {
-  const client = useQueryClient(),
+  const path = usePathname(),
+    client = useQueryClient(),
     query = useQuery({
       queryKey: ["identity"],
       queryFn: () => api<Identity>("/auth/me"),
@@ -47,6 +49,7 @@ function SessionProvider({ children }: { children: ReactNode }) {
   const [login, setLogin] = useState(false),
     [message, setMessage] = useState(""),
     [clock, setClock] = useState(Date.now());
+  useEffect(() => setLogin(false), [path]);
   const time = useRef({ server: Date.now(), local: Date.now() }),
     previous = useRef<string | null>(null),
     channel = useRef<BroadcastChannel | null>(null);
@@ -80,17 +83,31 @@ function SessionProvider({ children }: { children: ReactNode }) {
   }, [query.data, client]);
   useEffect(() => {
     const timer = setInterval(() => setClock(Date.now()), 1000);
-    const bc = new BroadcastChannel("autumn-prelude-session");
+    let bc: BroadcastChannel | null = null;
+    if (typeof BroadcastChannel === "function") {
+      try {
+        bc = new BroadcastChannel("autumn-prelude-session");
+      } catch {
+        // 某些浏览器隐私模式禁用通道；会话仍由 API 和定时查询复核。
+      }
+    }
     channel.current = bc;
-    bc.onmessage = (e) => {
-      if (e.data === "logout") clear();
-    };
+    if (bc)
+      bc.onmessage = (e) => {
+        if (e.data === "logout") clear();
+      };
     const expired = () => clear();
+    const storageLogout = (event: StorageEvent) => {
+      if (event.key === "autumn-prelude-logout" && event.newValue) clear();
+    };
     window.addEventListener("autumn:expired", expired);
+    window.addEventListener("storage", storageLogout);
     return () => {
       clearInterval(timer);
-      bc.close();
+      bc?.close();
+      channel.current = null;
       window.removeEventListener("autumn:expired", expired);
+      window.removeEventListener("storage", storageLogout);
     };
   }, [clear]);
   useEffect(() => {
@@ -126,6 +143,11 @@ function SessionProvider({ children }: { children: ReactNode }) {
     await mutate("/auth/logout");
     clear();
     channel.current?.postMessage("logout");
+    try {
+      localStorage.setItem("autumn-prelude-logout", String(Date.now()));
+    } catch {
+      // 存储也被禁用时，其它页面通过定时查询和服务端授权检查失效会话。
+    }
     setMessage("已退出，个人内容缓存已清除。");
   };
   return (

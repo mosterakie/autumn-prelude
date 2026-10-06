@@ -1,4 +1,4 @@
-import { demoRequest } from "./demo";
+import { randomId } from "./uuid";
 export const isDemo = process.env.NEXT_PUBLIC_API_MODE !== "api";
 let csrf: string | null = null;
 export const setCsrf = (token: string | null) => {
@@ -25,7 +25,10 @@ export async function api<T>(
   path: string,
   options: RequestOptions = {},
 ): Promise<T> {
-  if (isDemo) return demoRequest<T>(path, options);
+  if (isDemo) {
+    const { demoRequest } = await import("./demo");
+    return demoRequest<T>(path, options);
+  }
   const method = options.method || "GET",
     isForm = options.body instanceof FormData;
   const headers: Record<string, string> = {};
@@ -82,4 +85,4 @@ export const mutate = <T>(
   method: "POST" | "PATCH" | "DELETE" = "POST",
   key?: string,
 ) => api<T>(path, { method, body, key });
-export const newKey = () => crypto.randomUUID();
+export const newKey = randomId;

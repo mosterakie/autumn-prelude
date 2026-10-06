@@ -7,7 +7,7 @@ export function HeroParallax({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const hero = ref.current;
-    if (!hero) return;
+    if (!hero || typeof window.matchMedia !== "function") return;
     const preference = window.matchMedia(
       "(hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference)",
     );
@@ -71,14 +71,17 @@ export function HeroParallax({ children }: { children: ReactNode }) {
     hero.addEventListener("pointercancel", reset);
     window.addEventListener("blur", reset);
     document.addEventListener("visibilitychange", visibilityChanged);
-    preference.addEventListener("change", clear);
+    const modernMediaEvents = typeof preference.addEventListener === "function";
+    if (modernMediaEvents) preference.addEventListener("change", clear);
+    else preference.addListener?.(clear);
     return () => {
       hero.removeEventListener("pointermove", move);
       hero.removeEventListener("pointerleave", reset);
       hero.removeEventListener("pointercancel", reset);
       window.removeEventListener("blur", reset);
       document.removeEventListener("visibilitychange", visibilityChanged);
-      preference.removeEventListener("change", clear);
+      if (modernMediaEvents) preference.removeEventListener("change", clear);
+      else preference.removeListener?.(clear);
       clear();
     };
   }, []);

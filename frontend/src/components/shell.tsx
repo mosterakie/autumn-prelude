@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Menu, X, ArrowUpRight, Sparkles, LogOut } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type { Quota } from "@/lib/contracts";
@@ -13,10 +13,69 @@ const navigation = [
   ["/guestbook", "留言"],
   ["/about", "关于"],
 ];
+function HeaderLinks({
+  path,
+  owner,
+  onNavigate,
+}: {
+  path: string;
+  owner: boolean;
+  onNavigate: () => void;
+}) {
+  return (
+    <>
+      {navigation.map(([href, label]) => (
+        <Link
+          key={href}
+          href={href}
+          aria-current={path.startsWith(href) ? "page" : undefined}
+          onClick={onNavigate}
+        >
+          {label}
+        </Link>
+      ))}
+      {owner && (
+        <Link href="/admin/content" onClick={onNavigate}>
+          工作台
+        </Link>
+      )}
+      <Link
+        href={owner ? "/admin/chat" : "/chat"}
+        onClick={onNavigate}
+        className="nav-chat"
+      >
+        <Sparkles size={15} />
+        {owner ? "私人助手" : "与助手聊聊"}
+      </Link>
+    </>
+  );
+}
 export function Header() {
   const path = usePathname(),
     session = useSession(),
-    [open, setOpen] = useState(false);
+    menu = useRef<HTMLDetailsElement>(null);
+  const closeMenu = () => {
+    if (menu.current) menu.current.open = false;
+  };
+  useEffect(closeMenu, [path]);
+  useEffect(() => {
+    const outside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !menu.current?.contains(event.target))
+        closeMenu();
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && menu.current?.open) {
+        closeMenu();
+        menu.current.querySelector("summary")?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("keydown", escape);
+    };
+  }, []);
   return (
     <header className="site-header">
       <div className="header-inner">
@@ -26,30 +85,12 @@ export function Header() {
             秋序<small>AUTUMN PRELUDE</small>
           </span>
         </Link>
-        <nav aria-label="主导航" className={open ? "nav open" : "nav"}>
-          {navigation.map(([href, label]) => (
-            <Link
-              key={href}
-              href={href}
-              aria-current={path.startsWith(href) ? "page" : undefined}
-              onClick={() => setOpen(false)}
-            >
-              {label}
-            </Link>
-          ))}
-          {session.user?.role === "owner" && (
-            <Link href="/admin/content" onClick={() => setOpen(false)}>
-              工作台
-            </Link>
-          )}
-          <Link
-            href={session.user?.role === "owner" ? "/admin/chat" : "/chat"}
-            onClick={() => setOpen(false)}
-            className="nav-chat"
-          >
-            <Sparkles size={15} />
-            {session.user?.role === "owner" ? "私人助手" : "与助手聊聊"}
-          </Link>
+        <nav aria-label="主导航" className="nav desktop-nav">
+          <HeaderLinks
+            path={path}
+            owner={session.user?.role === "owner"}
+            onNavigate={closeMenu}
+          />
         </nav>
         <div className="row header-actions">
           {session.user ? (
@@ -58,18 +99,26 @@ export function Header() {
               <span>{session.user.role === "owner" ? "站长" : "我的小站"}</span>
             </Link>
           ) : (
-            <button className="button compact" onClick={session.openLogin}>
+            <Link href="/login" className="button compact" onClick={closeMenu}>
               登录 <span className="muted">/</span> 注册
-            </button>
+            </Link>
           )}
-          <button
-            className="icon-button mobile-menu"
-            aria-label={open ? "关闭菜单" : "打开菜单"}
-            aria-expanded={open}
-            onClick={() => setOpen(!open)}
-          >
-            {open ? <X /> : <Menu />}
-          </button>
+          <details ref={menu} className="header-menu">
+            <summary
+              className="icon-button mobile-menu"
+              aria-label="主导航菜单"
+            >
+              <Menu className="menu-open-icon" aria-hidden="true" />
+              <X className="menu-close-icon" aria-hidden="true" />
+            </summary>
+            <nav aria-label="手机主导航" className="nav mobile-nav">
+              <HeaderLinks
+                path={path}
+                owner={session.user?.role === "owner"}
+                onNavigate={closeMenu}
+              />
+            </nav>
+          </details>
         </div>
       </div>
     </header>

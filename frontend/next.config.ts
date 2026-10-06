@@ -1,5 +1,9 @@
 import type { NextConfig } from "next";
 const config: NextConfig = {
+  allowedDevOrigins: (process.env.DEV_ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((host) => host.trim())
+    .filter(Boolean),
   poweredByHeader: false,
   devIndicators: false,
   experimental: {

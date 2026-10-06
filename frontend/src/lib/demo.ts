@@ -19,8 +19,9 @@ import type {
 } from "./contracts";
 import { bookmarks, comments as initialComments, notes } from "./seeds";
 import { safeExternal, validateFile } from "./safety";
+import { randomId } from "./uuid";
 const now = () => new Date().toISOString(),
-  id = () => crypto.randomUUID();
+  id = randomId;
 let user: User | null = null,
   used = 0;
 let resources: Resource[] = [],
