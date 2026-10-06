@@ -11,7 +11,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+import selectors
 from collections.abc import Iterator
 
 import pytest
@@ -20,6 +22,12 @@ from fastapi.testclient import TestClient
 
 from autumn_backend.app import create_app
 from autumn_backend.config import Environment, Settings, get_settings
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_asyncio_loop_factories():
+    # psycopg 需要 Selector；同一个 session 的 asyncpg/psycopg 统一事件循环。
+    return {"selector": lambda: asyncio.SelectorEventLoop(selectors.DefaultSelector())}
 
 
 @pytest.fixture(autouse=True)

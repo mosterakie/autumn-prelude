@@ -29,13 +29,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# G 启用已验证的图运行库；Postgres checkpointer 的初始化随 H 运行器接入。
-agent = ["langgraph>=1.2.12,<1.3"]
+# 框架表由独立 setup 入口初始化，不混入业务 Alembic 元数据。
+agent = [
+    "langgraph>=1.2.12,<1.3",
+    "langgraph-checkpoint-postgres==3.1.2",
+    "psycopg[binary,pool]>=3.2,<4",
+]
 providers = ["httpx>=0.28,<1.0"]
 dev = [
     "httpx>=0.28,<1.0",
     "pytest>=8.3,<9.0",
-    "pytest-asyncio>=0.25,<2.0",
+    "pytest-asyncio>=1.4,<2.0",
     "pytest-timeout>=2.3,<3.0",
     "ruff>=0.9,<1.0",
     "mypy>=1.14,<2.0",

@@ -240,3 +240,9 @@ E8 已提供正式结果与 lease/代际/权限同事务的提交闸门；H 仍�
 - 固定注册表只领取已配置类型；领取后事务外执行，独立短事务续租。处理器必须通过业务服务原子收尾，主循环不补写成功结果。
 - 独立模块入口支持可信装配工厂和 --once；停止时取消处理器/续租并保留租约回收路径，异常仅保存稳定错误码。
 - 2 项真实数据库基础流程通过，Ruff、110 源文件 mypy strict 通过。处理器装配随 H3–H5 接入，节点本地提交，未推送。
+
+## H3 运行处理器与 PostgreSQL 检查点（2026-10-06）
+
+- run.dispatch / run.resume 调用同一 AgentRuntime 装配入口，身份、预算、正文与恢复均通过已有服务重读；依赖方向 workers → agent。
+- 官方 langgraph-checkpoint-postgres 3.1.2，框架表显式 setup 至 autumn_checkpoints 专用 schema；普通启动只核对迁移版本，不建表。autocommit/dict_row 与 Windows Selector 事件循环已适配。
+- 1 项真实运行/官方 saver 基础流程通过，关闭连接再打开可读取调度记录且无问题/回复正文；Ruff、112 源文件 mypy strict 通过。仅独立测试库建立测试 schema，业务库无写入；本地提交，未推送。
