@@ -49,7 +49,11 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="AUTUMN_",
-        env_file=(BACKEND_ROOT / ".env", BACKEND_ROOT / ".env.providers.local"),
+        env_file=(
+            BACKEND_ROOT / ".env",
+            BACKEND_ROOT / ".env.providers.local",
+            BACKEND_ROOT / ".env.mail.local",
+        ),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -133,6 +137,62 @@ class Settings(BaseSettings):
     checkpoint_schema: str = "autumn_checkpoints"
     storage_root: Path = BACKEND_ROOT / "var" / "storage"
 
+    # 只支持隐式 TLS 发信；空授权码不装配邮件处理器。
+    smtp_host: str | None = None
+    smtp_port: int = Field(default=465, ge=1, le=65535)
+    smtp_username: str | None = None
+    smtp_password: SecretStr | None = None
+    smtp_from_email: str | None = None
+    smtp_from_name: str = Field(default="秋序", min_length=1, max_length=120)
+    smtp_timeout_seconds: float = Field(default=20, gt=0, le=60)
+    frontend_base_url: str = "http://localhost:3000"
+
+    @field_validator("smtp_host", "smtp_username", "smtp_from_email")
+    @classmethod
+    def valid_mail_field(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        if (
+            not value.isascii()
+            or any(char.isspace() for char in value)
+            or any(char in value for char in "<>;,/\\")
+        ):
+            raise ValueError("邮件连接或地址字段无效")
+        return value
+
+    @field_validator("smtp_from_name")
+    @classmethod
+    def valid_mail_name(cls, value: str) -> str:
+        if not value.strip() or "\r" in value or "\n" in value:
+            raise ValueError("邮件发件名称无效")
+        return value
+
+    @field_validator("frontend_base_url")
+    @classmethod
+    def valid_frontend_url(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.path not in ("", "/")
+            or parsed.query
+            or parsed.fragment
+            or any(char.isspace() for char in value)
+        ):
+            raise ValueError("邮件链接必须使用无路径的完整前端地址")
+        try:
+            _ = parsed.port
+        except ValueError as error:
+            raise ValueError("前端地址端口无效") from error
+        return value.rstrip("/")
+
+    @property
+    def mail_enabled(self) -> bool:
+        return bool(self.smtp_password and self.smtp_password.get_secret_value().strip())
+
     # -------------------------------------------------------------- 校验 ----
     @field_validator("session_secret", "csrf_secret", "auth_encryption_key", mode="before")
     @classmethod
@@ -151,6 +211,17 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _enforce_production_invariants(self) -> Settings:
+        if self.mail_enabled:
+            if not self.smtp_host or not self.smtp_username or not self.smtp_from_email:
+                raise ValueError("启用邮件时必须填写 SMTP 主机、用户名与发件邮箱")
+            if not re.fullmatch(r"[A-Za-z0-9.-]+", self.smtp_host):
+                raise ValueError("SMTP 主机格式无效")
+            if not re.fullmatch(r"[^@]+@[^@]+\.[^@]+", self.smtp_from_email):
+                raise ValueError("发件邮箱格式无效")
+            if self.environment is Environment.PROD and not self.frontend_base_url.startswith(
+                "https://"
+            ):
+                raise ValueError("生产邮件链接必须使用 HTTPS 前端地址")
         if not self.trusted_origins:
             raise ValueError("必须配置明确的可信 Origin")
         for origin in self.trusted_origins:

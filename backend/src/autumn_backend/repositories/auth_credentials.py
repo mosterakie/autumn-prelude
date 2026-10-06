@@ -2,14 +2,48 @@
 
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import Text, case, cast, func, or_, select, update
 
 from autumn_backend.db.enums import AuthTokenPurpose, JobStatus
 from autumn_backend.db.models import AdminFactor, AuthToken, Job
+from autumn_backend.errors import InvalidInputError
 from autumn_backend.repositories.base import RepositoryBase
 
 
 class AuthCredentialRepository(RepositoryBase):
+    async def scrub_expired_mail(self, *, limit: int = 100) -> None:
+        if not 1 <= limit <= 1000:
+            raise InvalidInputError("邮件清理批量无效")
+        candidates = (
+            select(Job.id)
+            .outerjoin(AuthToken, cast(AuthToken.id, Text) == Job.payload["token_id"].astext)
+            .where(
+                Job.kind == "auth.email",
+                Job.payload.has_key("ciphertext"),
+                Job.status != JobStatus.RUNNING,
+                or_(
+                    AuthToken.id.is_(None),
+                    AuthToken.expires_at <= func.clock_timestamp(),
+                    AuthToken.consumed_at.is_not(None),
+                    Job.status.in_((JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED)),
+                ),
+            )
+            .order_by(Job.created_at, Job.id)
+            .limit(limit)
+        )
+        await self.session.execute(
+            update(Job)
+            .where(Job.id.in_(candidates), Job.status != JobStatus.RUNNING)
+            .values(
+                payload=Job.payload.op("-")("ciphertext"),
+                status=case(
+                    (Job.status == JobStatus.QUEUED, JobStatus.CANCELLED), else_=Job.status
+                ),
+                version=Job.version + 1,
+            )
+            .execution_options(synchronize_session=False)
+        )
+
     async def invalidate_other_tokens(
         self, user_id: UUID, purpose: AuthTokenPurpose, consumed_id: UUID
     ) -> None:

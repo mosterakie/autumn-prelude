@@ -1,11 +1,12 @@
 "use client";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { isDemo, mutate } from "@/lib/api";
 import { safeReturnPath } from "@/lib/safety";
+import { mailToken } from "@/lib/mail-token";
 import { useSession } from "./providers";
-import { Button, Notice, PageHeading } from "./ui";
+import { Button, Notice, PageHeading, Spinner } from "./ui";
 export type AuthKind =
   | "login"
   | "register"
@@ -119,14 +120,14 @@ export function AuthForm({
           <input
             type="password"
             required
-            minLength={8}
-            maxLength={128}
+            minLength={isDemo ? 8 : 12}
+            maxLength={isDemo ? 128 : 256}
             autoComplete={
               kind === "login" ? "current-password" : "new-password"
             }
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder="至少 8 个字符"
+            placeholder={isDemo ? "至少 8 个字符" : "至少 12 个字符"}
           />
         </label>
       )}
@@ -196,7 +197,21 @@ export function AuthForm({
 }
 export function AuthPage({ kind }: { kind: AuthKind }) {
   const search = useSearchParams(),
-    router = useRouter();
+    router = useRouter(),
+    [linkToken, setLinkToken] = useState<string | null>(null),
+    capturedKind = useRef<AuthKind | null>(null);
+  const isMailLink = ["verify-email", "reset-password"].includes(kind);
+  useEffect(() => {
+    if (!["verify-email", "reset-password"].includes(kind)) return;
+    // Strict Mode 会再次运行 effect，不能用已清理的 URL 覆盖捕获的凭据。
+    if (capturedKind.current === kind) return;
+    capturedKind.current = kind;
+    setLinkToken(mailToken(window.location.search, window.location.hash));
+    const query = new URLSearchParams(window.location.search);
+    query.delete("token");
+    const clean = window.location.pathname + (query.size ? `?${query}` : "");
+    window.history.replaceState(window.history.state, "", clean);
+  }, [kind]);
   const titles: Record<AuthKind, string> = {
     login: "欢迎回到秋序",
     register: "在这里，留下名字",
@@ -212,13 +227,17 @@ export function AuthPage({ kind }: { kind: AuthKind }) {
         每一段相遇，都从一句你好开始。
       </PageHeading>
       <div className="panel auth-card">
-        <AuthForm
-          kind={kind}
-          token={search.get("token") || ""}
-          onSuccess={() =>
-            router.replace(safeReturnPath(search.get("returnTo")))
-          }
-        />
+        {isMailLink && linkToken === null ? (
+          <Spinner />
+        ) : (
+          <AuthForm
+            kind={kind}
+            token={isMailLink ? linkToken || "" : ""}
+            onSuccess={() =>
+              router.replace(safeReturnPath(search.get("returnTo")))
+            }
+          />
+        )}
       </div>
     </div>
   );

@@ -10,9 +10,10 @@ from autumn_backend.agent.checkpoints import postgres_saver
 from autumn_backend.agent.contracts import ModelDriver
 from autumn_backend.config import get_settings
 from autumn_backend.db.session import UnitOfWorkFactory, create_engine, create_session_factory
-from autumn_backend.jobs.queue import Queue
+from autumn_backend.jobs.queue import LeasedJob, Queue
 from autumn_backend.providers.configured import providers
 from autumn_backend.services.action_execution import ActionExecutionService
+from autumn_backend.services.auth_email import AuthEmailService
 from autumn_backend.services.conversation_cleanup import ConversationCleanupService
 from autumn_backend.services.knowledge import KnowledgeService
 from autumn_backend.services.maintenance import MaintenanceService
@@ -40,11 +41,20 @@ def configured_worker(
     model: ModelDriver | None = None,
     saver: BaseCheckpointSaver[Any] | None = None,
     web_search: WebSearchService | None = None,
+    email: AuthEmailService | None = None,
 ) -> Worker:
     tasks = TaskService(uows)
     handlers = {**storage_handlers(storage, tasks), **cleanup_handlers(uows)}
     handlers["action.execute"] = ActionExecutionService(uows).execute
     handlers["conversation.cleanup"] = ConversationCleanupService(uows).execute
+    if email is not None:
+        handlers["auth.email"] = email.execute
+
+    async def failure(job: LeasedJob, error: Exception) -> None:
+        if job.kind == "auth.email" and email is not None:
+            await email.failure(job, error)
+        else:
+            await tasks.failure(job, error)
 
     async def cancel(provider: str, name: str, key: str) -> None:
         if model is not None and (provider, name) == (model.provider, model.model):
@@ -62,7 +72,7 @@ def configured_worker(
             run_handlers(agent_runtime(uows, knowledge, model, saver, web_search=web_search))
         )
     return Worker(
-        Queue(uows), Registry(handlers), tasks.failure, maintenance=MaintenanceService(uows).tick
+        Queue(uows), Registry(handlers), failure, maintenance=MaintenanceService(uows).tick
     )
 
 
@@ -98,6 +108,9 @@ async def worker() -> AsyncIterator[Worker]:
                 model=configured.model,
                 saver=saver,
                 web_search=web_search,
+                email=AuthEmailService(uows, settings, configured.mailer)
+                if configured.mailer
+                else None,
             )
     finally:
         await engine.dispose()

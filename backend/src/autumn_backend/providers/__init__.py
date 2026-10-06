@@ -3,5 +3,5 @@
 外部适配：LLM、联网搜索、向量化、重排序、邮件。
 硬约束：不包含业务权限逻辑。
 
-已接入 DeepSeek JSON 规划、百炼 1024 维嵌入与 Tavily 基础搜索；邮件仍待接入。
+已接入 DeepSeek JSON 规划、百炼 1024 维嵌入、Tavily 基础搜索与 TLS SMTP 邮件。
 """

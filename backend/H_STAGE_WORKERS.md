@@ -13,7 +13,7 @@ python -m autumn_backend.workers
 
 默认装配文件、人工确认的数据库动作、取消、索引失效清理和会话派生摘要清理。没有配置真实模型、Embedding 或邮件适配器时，其余任务保持排队。不会伪造回复、向量或邮件发送成功。
 
-后续已补齐真实 AI 装配：配置百炼后注册知识任务，配置 DeepSeek、百炼和已初始化的 PostgreSQL saver 后注册 Run 任务；Tavily 配置后提供站长联网工具。缺少必要的嵌入端口或检查点时模型 Worker 启动失败，不能提供伪造回复。具体配置和验收边界见 [PROVIDERS_ACCEPTANCE.md](PROVIDERS_ACCEPTANCE.md)。邮件仍未接入。
+后续已补齐真实 AI 装配：配置百炼后注册知识任务，配置 DeepSeek、百炼和已初始化的 PostgreSQL saver 后注册 Run 任务；Tavily 配置后提供站长联网工具。缺少必要的嵌入端口或检查点时模型 Worker 启动失败，不能提供伪造回复。具体配置和验收边界见 [PROVIDERS_ACCEPTANCE.md](PROVIDERS_ACCEPTANCE.md)。SMTP 适配与固定邮件处理器也已补齐，授权码非空时注册，配置和真实收件验证边界见 [EMAIL_CONFIGURATION.md](EMAIL_CONFIGURATION.md)。
 
 完整 Agent 工厂通过可信本地 `--factory module:factory` 指定，工厂是返回 Worker 的异步上下文管理器。它负责端口连接的生命周期，并调用 `workers.bootstrap.configured_worker(uows, storage, knowledge=..., model=..., saver=...)`；model 必须同时配置 knowledge 和持久 saver。这个入口不接受 HTTP 或模型传入的模块路径。
 
@@ -39,7 +39,7 @@ python -m autumn_backend.workers --setup-checkpoints
 | knowledge.cleanup | 只撤下当前失效索引，保留正文与历史引用 | 是 |
 | run.cancel | 尝试取消配置匹配的上游调用，保留未知费用 | 是 |
 | conversation.cleanup | 已软删除本人会话的派生摘要失效 | 是 |
-| auth.email | 实际邮件发送 | 待真实邮件端口 |
+| auth.email | 验证邮箱 / 重置密码邮件，未知结果不重发 | 需要有效 SMTP 配置 |
 
 实施建议中的 `knowledge.index` 对应现有契约 `knowledge.ingest`，未增加同义任务类型。`jobs.queue` 不认识处理器；允许 `workers → agent/services`，禁止反向依赖。
 
@@ -89,4 +89,4 @@ Worker 在领取前、之后每约 60 秒运行一次有界收敛；单个任务
 
 H 的 14 项基础流程与 5 项受影响 Agent 流程集中核对，覆盖领取过滤、续租失效、崩溃回收、文件验证恢复、索引公开投影、确认动作、账本稳定键、取消、对账幂等、额度保留与待删文件重试。仅使用 5442 独立 PostgreSQL、确定性模型/嵌入端口和实际 LangGraph/Postgres saver；不请求付费供应商或邮件。
 
-每个 H 节点本地提交，未推送或部署。H 阶段本身没有请求真实供应商；后续已完成真实模型/嵌入/搜索适配与有限基础验收，见 [PROVIDERS_ACCEPTANCE.md](PROVIDERS_ACCEPTANCE.md)。邮件适配器及后续 CI、可观测性和横切验收仍待开发。
+每个 H 节点本地提交，未推送或部署。H 阶段本身没有请求真实供应商；后续已完成真实模型/嵌入/搜索适配与有限基础验收，见 [PROVIDERS_ACCEPTANCE.md](PROVIDERS_ACCEPTANCE.md)。邮件适配器已补齐基础检查，但真实邮箱登录/收件、后续 CI、可观测性和横切验收仍待完成。

@@ -147,6 +147,12 @@ class MaintenanceService:
             job = await uow.repositories.jobs.reclaim(
                 job.id, job.lease_token, status=destination, error_code=code
             )
+            if job.kind == "auth.email":
+                job.payload = {
+                    key: value for key, value in (job.payload or {}).items() if key != "ciphertext"
+                }
+                job.version += 1
+                await uow.session.flush()
             if job.status is JobStatus.FAILED:
                 if action is not None and action.status is ActionStatus.READY:
                     action.status, action.error_code = ActionStatus.FAILED, job.error_code
@@ -250,6 +256,7 @@ class MaintenanceService:
 
     async def tick(self) -> None:
         async with self.uows() as uow:
+            await uow.repositories.auth_credentials.scrub_expired_mail(limit=100)
             expired = await uow.repositories.jobs.expired(limit=100)
             now = await uow.repositories.users.database_time()
             reservations = await uow.repositories.quota_reservations.cleanup_candidates(

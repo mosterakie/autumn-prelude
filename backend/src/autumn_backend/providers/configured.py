@@ -10,6 +10,7 @@ from autumn_backend.config import Settings
 from autumn_backend.providers.dashscope import DashScopeEmbedder
 from autumn_backend.providers.deepseek import DeepSeekModel
 from autumn_backend.providers.http import Transport
+from autumn_backend.providers.mail import SMTPMailer
 from autumn_backend.providers.tavily import TavilySearch
 
 
@@ -18,6 +19,7 @@ class Providers:
     model: DeepSeekModel | None
     embedder: DashScopeEmbedder | None
     search: TavilySearch | None
+    mailer: SMTPMailer | None = None
 
 
 @asynccontextmanager
@@ -49,4 +51,5 @@ async def providers(settings: Settings) -> AsyncIterator[Providers]:
             if settings.search_api_key and settings.search_api_key.get_secret_value().strip()
             else None
         )
-        yield Providers(model, embedder, search)
+        mailer = SMTPMailer(settings) if settings.mail_enabled else None
+        yield Providers(model, embedder, search, mailer)

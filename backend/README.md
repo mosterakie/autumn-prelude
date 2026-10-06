@@ -21,7 +21,7 @@
 额度、文件、知识库、动作等待与正式结果提交见 [E_STAGE_SERVICES.md](E_STAGE_SERVICES.md)。
 邮箱密码/会话认证已接入，说明见 [AUTH_CONTRACT.md](AUTH_CONTRACT.md)。已交付 API、SSE、版本/动作请求体及剩余入口见 [F_STAGE_API.md](F_STAGE_API.md)。LangGraph 与薄工具、权限/预算/等待恢复/来源提交见 [G_STAGE_AGENT.md](G_STAGE_AGENT.md)。Worker 启动、处理器、Postgres 检查点、故障回收与人工对账见 [H_STAGE_WORKERS.md](H_STAGE_WORKERS.md)。DeepSeek、百炼嵌入与 Tavily 已接入并通过真实 AI 链路基础验收，见 [PROVIDERS_ACCEPTANCE.md](PROVIDERS_ACCEPTANCE.md)；真实邮件、前后端完整联调及 I 阶段横切验收仍待完成。
 
-当前没有 SMTP 配置项或 auth.email 发送处理器。配置文件位置、读取优先级和邮箱接入准备见 [EMAIL_CONFIGURATION.md](EMAIL_CONFIGURATION.md)；注册受理不表示邮件已经发出。
+SMTP 配置与 auth.email 发送处理器已接入，支持验证邮箱与重置密码。本地 163 邮箱配置、授权码填写位置和使用方法见 [EMAIL_CONFIGURATION.md](EMAIL_CONFIGURATION.md)。授权码尚未填写，真实 SMTP 登录与收件仍待验证；注册受理不表示邮件已经发出。
 
 ### 阶段 A 验收与评审修复
 
