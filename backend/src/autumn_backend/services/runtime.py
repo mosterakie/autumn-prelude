@@ -8,13 +8,32 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 
 from autumn_backend.config import Settings, get_settings
-from autumn_backend.db.enums import MessageRole, MessageStatus, RunStatus
-from autumn_backend.db.models import Message, Run
+from autumn_backend.db.enums import (
+    JobStatus,
+    MessageRole,
+    MessageStatus,
+    ProviderCallStatus,
+    RunEventType,
+    RunStatus,
+)
+from autumn_backend.db.models import Message, ProviderCall, Run
 from autumn_backend.db.session import UnitOfWork, UnitOfWorkFactory
 from autumn_backend.errors import ConflictError, DomainError, NotFoundError, OptimisticLockError
-from autumn_backend.policies import ActorContext, ActorRole
+from autumn_backend.policies import ActorContext, ActorRole, Decision, DenialCode
 from autumn_backend.policies.facts import Operation
-from autumn_backend.services.context import run_facts
+from autumn_backend.services.access import AuthorizationError
+from autumn_backend.services.context import advance_context_generation, run_facts
+from autumn_backend.services.quota import QuotaService
+
+StopCode = Literal[
+    "ACL_CONTEXT_INVALIDATED",
+    "SESSION_EXPIRED",
+    "STEP_UP_REQUIRED",
+    "AGENT_BUDGET_EXCEEDED",
+    "MODEL_OUTPUT_INVALID",
+    "PROVIDER_ERROR",
+    "AGENT_ERROR",
+]
 
 
 class BudgetExceededError(DomainError):
@@ -130,6 +149,18 @@ class RuntimeService:
             or (generation is not None and generation != run.execution_generation)
         ):
             raise OptimisticLockError("任务代际已失效")
+        # 只有已经切换代际、明确要求重建的服务端任务，才可刷新 epoch。
+        manifest = run.config_snapshot.get("context_manifest", {})
+        if (
+            not context
+            and actor.scope_epoch != run.scope_epoch
+            and not (
+                payload.get("rebuild_context") is True
+                and isinstance(manifest, dict)
+                and manifest.get("complete") is False
+            )
+        ):
+            raise AuthorizationError(Decision(code=DenialCode.ACL_CONTEXT_INVALIDATED))
         assert facts.target is not None and facts.target.mode is not None
         return actor, run, facts.target.mode.value
 
@@ -201,6 +232,91 @@ class RuntimeService:
             await self._locked(
                 uow, ticket.job_id, ticket.token, generation=ticket.generation, context=context
             )
+
+    async def stop(self, job_id: UUID, token: UUID, *, code: StopCode) -> UUID:
+        """可信运行器的失败收尾；即使会话过期也只允许当前 lease 写停止元数据。
+
+        不读取或返回私人正文，不放行工具或结果，不授权继续执行。旧代际不能收尾新任务。
+        """
+        async with self.uows() as uow:
+            probe = await uow.repositories.jobs.get_or_raise(job_id)
+            if (
+                probe.kind not in ("run.dispatch", "run.resume")
+                or probe.actor_id is None
+                or probe.auth_session_id is None
+                or probe.run_id is None
+            ):
+                raise NotFoundError("运行任务不存在")
+            await uow.repositories.users.get_for_update_or_raise(probe.actor_id)
+            session = await uow.repositories.auth_sessions.for_user_for_update(
+                probe.auth_session_id, probe.actor_id
+            )
+            candidate = await uow.repositories.runs.get_or_raise(probe.run_id)
+            await uow.repositories.conversations.for_user_for_update(
+                candidate.conversation_id, probe.actor_id
+            )
+            run = await uow.repositories.runs.get_for_update_or_raise(candidate.id)
+            job = await uow.repositories.jobs.require_lease(job_id, token)
+            payload = job.payload or {}
+            if (
+                session is None
+                or run.user_id != probe.actor_id
+                or job.auth_session_id != run.auth_session_id
+                or type(payload.get("execution_generation")) is not int
+                or payload["execution_generation"] != run.execution_generation
+                or run.status not in (RunStatus.QUEUED, RunStatus.RUNNING)
+            ):
+                raise OptimisticLockError("停止请求不属于当前执行")
+            calls = (
+                await uow.session.scalars(
+                    select(ProviderCall)
+                    .where(
+                        ProviderCall.run_id == run.id,
+                        ProviderCall.job_id == job.id,
+                        ProviderCall.status == ProviderCallStatus.DISPATCHED,
+                    )
+                    .with_for_update()
+                    .order_by(ProviderCall.id)
+                )
+            ).all()
+            for call in calls:
+                await uow.repositories.provider_calls.settle_unknown(call.id, error_code=code)
+            waiting = code in ("SESSION_EXPIRED", "STEP_UP_REQUIRED")
+            await advance_context_generation(uow, run, preserve_sources=waiting)
+            run.status = RunStatus.WAITING_AUTH if waiting else RunStatus.FAILED
+            run.error_code = code
+            run.finished_at = None if waiting else await uow.repositories.users.database_time()
+            run.version += 1
+            await uow.session.flush()
+            if not waiting and not await uow.repositories.provider_calls.model_was_dispatched(
+                run.id
+            ):
+                reservation = await uow.repositories.quota_reservations.for_run(run.id)
+                if reservation is not None and reservation.status.value == "reserved":
+                    await QuotaService(self.uows).release_before_dispatch_in_uow(uow, run.id)
+            if code == "ACL_CONTEXT_INVALIDATED":
+                await uow.repositories.run_events.emit(
+                    run.id,
+                    RunEventType.SOURCE_INVALIDATED,
+                    {"code": code, "execution_generation": run.execution_generation},
+                )
+            await uow.repositories.run_events.emit(
+                run.id,
+                RunEventType.RUN_STATUS if waiting else RunEventType.ERROR,
+                {"code": code, "status": run.status.value},
+            )
+            if not waiting:
+                await uow.repositories.run_events.emit(
+                    run.id, RunEventType.DONE, {"status": run.status.value}
+                )
+            await uow.repositories.jobs.finish(
+                job.id,
+                token,
+                status=JobStatus.FAILED,
+                error_code=code,
+                result={"run_id": str(run.id), "execution_generation": run.execution_generation},
+            )
+            return run.id
 
     async def reserve(
         self,
