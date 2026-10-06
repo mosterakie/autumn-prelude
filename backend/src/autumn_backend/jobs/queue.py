@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from uuid import UUID
 
+from autumn_backend.db.enums import JobStatus
 from autumn_backend.db.models import Job
 from autumn_backend.db.session import UnitOfWork, UnitOfWorkFactory
 from autumn_backend.repositories.jobs import JobSpec
@@ -38,4 +39,14 @@ class Queue:
         async with self.uows() as uow:
             await uow.repositories.jobs.heartbeat(
                 job.id, job.token, lease_seconds=self.lease_seconds
+            )
+
+    async def settled(self, job: LeasedJob) -> bool:
+        async with self.uows() as uow:
+            current = await uow.repositories.jobs.get_or_raise(job.id)
+            return current.status in (
+                JobStatus.SUCCEEDED,
+                JobStatus.FAILED,
+                JobStatus.CANCELLED,
+                JobStatus.WAITING_AUTH,
             )
