@@ -4,7 +4,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from autumn_backend.db.enums import JobStatus, ProviderCallStatus
+from autumn_backend.db.enums import JobStatus, ProviderCallStatus, RunStatus
 from autumn_backend.db.models import ProviderCall
 from autumn_backend.db.session import UnitOfWorkFactory
 from autumn_backend.errors import NotFoundError, OptimisticLockError
@@ -42,13 +42,18 @@ class TaskService:
 
     async def failure(self, job: LeasedJob, error: Exception) -> None:
         code: StopCode = "AGENT_ERROR"
-        if isinstance(error, AuthorizationError):
+        if isinstance(error, AuthorizationError) and error.decision.code in (
+            DenialCode.SESSION_EXPIRED,
+            DenialCode.STEP_UP_REQUIRED,
+        ):
             code = (
                 "STEP_UP_REQUIRED"
                 if error.decision.code is DenialCode.STEP_UP_REQUIRED
                 else "SESSION_EXPIRED"
             )
         if job.kind in ("run.dispatch", "run.resume"):
+            if await self.close_obsolete(job):
+                return
             await RuntimeService(self.uows).stop(job.id, job.token, code=code)
             return
         async with self.uows() as uow:
@@ -72,6 +77,53 @@ class TaskService:
             await uow.repositories.jobs.finish(
                 job.id, job.token, status=JobStatus.FAILED, error_code="HANDLER_FAILED"
             )
+
+    async def close_obsolete(self, leased: LeasedJob) -> bool:
+        """仅终结已失效的旧任务，不能改写新代际 Run 或生成正文。"""
+        async with self.uows() as uow:
+            probe = await uow.repositories.jobs.get_or_raise(leased.id)
+            if probe.run_id is None or probe.actor_id is None:
+                return False
+            await uow.repositories.users.get_for_update_or_raise(probe.actor_id)
+            if probe.auth_session_id:
+                await uow.repositories.auth_sessions.for_user_for_update(
+                    probe.auth_session_id, probe.actor_id
+                )
+            candidate = await uow.repositories.runs.get_or_raise(probe.run_id)
+            await uow.repositories.conversations.for_user_for_update(
+                candidate.conversation_id, probe.actor_id
+            )
+            run = await uow.repositories.runs.get_for_update_or_raise(candidate.id)
+            job = await uow.repositories.jobs.require_lease(leased.id, leased.token)
+            if (
+                run.execution_generation == (job.payload or {}).get("execution_generation")
+                and run.status
+                in (
+                    RunStatus.QUEUED,
+                    RunStatus.RUNNING,
+                )
+                and run.auth_session_id == job.auth_session_id
+            ):
+                return False
+            calls = (
+                await uow.session.scalars(
+                    select(ProviderCall)
+                    .where(
+                        ProviderCall.job_id == job.id,
+                        ProviderCall.status == ProviderCallStatus.DISPATCHED,
+                    )
+                    .order_by(ProviderCall.id)
+                    .with_for_update()
+                )
+            ).all()
+            for call in calls:
+                await uow.repositories.provider_calls.settle_unknown(
+                    call.id, error_code="EXECUTION_SUPERSEDED"
+                )
+            await uow.repositories.jobs.finish(
+                job.id, leased.token, status=JobStatus.CANCELLED, error_code="EXECUTION_SUPERSEDED"
+            )
+            return True
 
     async def resume(
         self, actor: ActorContext, job_id: UUID, *, expected_version: int

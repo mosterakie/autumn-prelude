@@ -12,6 +12,7 @@ from autumn_backend.db.session import UnitOfWorkFactory, create_engine, create_s
 from autumn_backend.jobs.queue import Queue
 from autumn_backend.services.action_execution import ActionExecutionService
 from autumn_backend.services.knowledge import KnowledgeService
+from autumn_backend.services.run_cancellation import RunCancellationService
 from autumn_backend.services.storage import StorageService
 from autumn_backend.services.tasks import TaskService
 from autumn_backend.storage.local import LocalObjectStore
@@ -37,6 +38,14 @@ def configured_worker(
     tasks = TaskService(uows)
     handlers = {**storage_handlers(storage, tasks), **cleanup_handlers(uows)}
     handlers["action.execute"] = ActionExecutionService(uows).execute
+
+    async def cancel(provider: str, name: str, key: str) -> None:
+        if model is not None and (provider, name) == (model.provider, model.model):
+            await model.cancel(external_idempotency_key=key)
+
+    handlers["run.cancel"] = RunCancellationService(
+        uows, cancel if model is not None else None
+    ).execute
     if knowledge is not None:
         handlers.update(knowledge_handlers(knowledge, tasks))
     if model is not None:
