@@ -1,7 +1,9 @@
 """领取事务结束后启动处理器及独立续租；成功结算由业务服务承担。"""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from time import monotonic
 from typing import Any
 
 from autumn_backend.errors import LeaseLostError
@@ -19,11 +21,17 @@ class Worker:
         *,
         heartbeat_seconds: float = 15,
         poll_seconds: float = 1,
+        maintenance: Callable[[], Awaitable[None]] | None = None,
+        maintenance_seconds: float = 60,
     ) -> None:
         if not 0 < heartbeat_seconds < queue.lease_seconds / 2 or poll_seconds <= 0:
             raise ValueError("续租周期必须短于半个租期，轮询周期须为正数")
         self.queue, self.registry, self.failure = queue, registry, failure
         self.heartbeat_seconds, self.poll_seconds = heartbeat_seconds, poll_seconds
+        if maintenance_seconds <= 0:
+            raise ValueError("收敛周期须为正数")
+        self.maintenance, self.maintenance_seconds = maintenance, maintenance_seconds
+        self._next_maintenance = 0.0
 
     async def _heartbeat(self, job: LeasedJob) -> None:
         while True:
@@ -43,6 +51,9 @@ class Worker:
 
     async def run_once(self) -> bool:
         require_outside_uow()
+        if self.maintenance and monotonic() >= self._next_maintenance:
+            await self.maintenance()
+            self._next_maintenance = monotonic() + self.maintenance_seconds
         job = await self.queue.claim(self.registry.kinds)
         if job is None:
             return False
@@ -87,6 +98,8 @@ class Worker:
                 once.result()
             finally:
                 await self._cancel(stopping)
+                if not once.done():
+                    await self._cancel(once)
             if not once.result():
                 with suppress(TimeoutError):
                     await asyncio.wait_for(stop.wait(), timeout=self.poll_seconds)

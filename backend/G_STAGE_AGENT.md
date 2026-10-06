@@ -87,7 +87,7 @@ checkpoint 只包含 Run ID、代际、步数和路由。节点异常转换为�
 基础验收覆盖工具身份、预算、检索来源、等待恢复、人工确认后 ACL 重建、生成中
 权限撤回与 checkpoint 内容边界，具体结果见 DEVELOPMENT.md。
 
-H 接入 Worker 主循环、registry、heartbeat、回收、业务 handlers 和受控对账；
-Postgres checkpoint saver 的安装/初始化也在 H 接入，本阶段仅支持注入 saver。
-I 接入真实供应商与邮件端口。联网搜索尚未注册为工具，不伪称已联网。完整工具清单、
-自动摘要/记忆选择及保留策略管理继续按后续功能扩展。网站真实模型端到端运行尚待 H/I。
+H 已接入 Worker 主循环、registry、heartbeat、回收、业务 handlers、受控对账与
+官方 Postgres checkpoint saver，入口及初始化边界见 [H_STAGE_WORKERS.md](H_STAGE_WORKERS.md)。
+真实供应商与邮件端口继续后续接入。联网搜索尚未注册为工具，不伪称已联网。完整工具清单、
+自动摘要/记忆选择及保留策略管理继续按后续功能扩展。网站真实模型端到端运行仍需供应商适配器。

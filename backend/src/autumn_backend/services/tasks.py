@@ -4,7 +4,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from autumn_backend.db.enums import JobStatus, ProviderCallStatus, RunStatus
+from autumn_backend.db.enums import ActionStatus, JobStatus, ProviderCallStatus, RunStatus
 from autumn_backend.db.models import ProviderCall
 from autumn_backend.db.session import UnitOfWorkFactory
 from autumn_backend.errors import NotFoundError, OptimisticLockError
@@ -12,6 +12,7 @@ from autumn_backend.jobs.queue import LeasedJob
 from autumn_backend.policies import ActorContext, ActorRole, DenialCode
 from autumn_backend.policies.facts import Operation, PolicyFacts
 from autumn_backend.services.access import AuthorizationError, lock_authentication, require_allowed
+from autumn_backend.services.maintenance import fail_run_in_uow
 from autumn_backend.services.runtime import RuntimeService, StopCode
 
 
@@ -56,6 +57,9 @@ class TaskService:
                 return
             await RuntimeService(self.uows).stop(job.id, job.token, code=code)
             return
+        if job.kind == "action.execute":
+            await self._fail_action(job)
+            return
         async with self.uows() as uow:
             await uow.repositories.jobs.require_lease(job.id, job.token)
             calls = (
@@ -92,6 +96,65 @@ class TaskService:
                 return
             await uow.repositories.jobs.finish(
                 job.id, job.token, status=JobStatus.FAILED, error_code="HANDLER_FAILED"
+            )
+
+    async def _fail_action(self, leased: LeasedJob) -> None:
+        async with self.uows() as uow:
+            probe = await uow.repositories.jobs.get_or_raise(leased.id)
+            if probe.actor_id:
+                await uow.repositories.users.get_for_update_or_raise(probe.actor_id)
+                if probe.auth_session_id:
+                    await uow.repositories.auth_sessions.for_user_for_update(
+                        probe.auth_session_id, probe.actor_id
+                    )
+            run = None
+            if probe.run_id:
+                candidate = await uow.repositories.runs.get_or_raise(probe.run_id)
+                await uow.repositories.conversations.get_for_update_or_raise(
+                    candidate.conversation_id
+                )
+                run = await uow.repositories.runs.get_for_update_or_raise(candidate.id)
+            try:
+                action_id = UUID((probe.payload or {})["action_id"])
+            except (KeyError, ValueError, TypeError):
+                action_id = None
+            action = await uow.repositories.actions.get_for_update(action_id) if action_id else None
+            job = await uow.repositories.jobs.require_lease(leased.id, leased.token)
+            if action and action.actor_id == job.actor_id and action.status is ActionStatus.READY:
+                action.status, action.error_code = ActionStatus.FAILED, "ACTION_EXECUTION_FAILED"
+                action.version += 1
+            if run and run.execution_generation == (job.payload or {}).get("execution_generation"):
+                await fail_run_in_uow(uow, self.uows, run.id, "ACTION_EXECUTION_FAILED")
+            await uow.session.flush()
+            await uow.repositories.jobs.finish(
+                job.id, leased.token, status=JobStatus.FAILED, error_code="ACTION_EXECUTION_FAILED"
+            )
+
+    async def waiting(self, actor: ActorContext) -> tuple[dict[str, object], ...]:
+        async with self.uows() as uow:
+            authentication = await lock_authentication(uow, actor)
+            require_allowed(
+                actor,
+                PolicyFacts(
+                    operation=Operation.INGEST_RESOURCE,
+                    authentication=authentication,
+                    now=await uow.repositories.users.database_time(),
+                    current_scope_epoch=await uow.repositories.settings.get_acl_epoch(),
+                ),
+            )
+            from autumn_backend.db.models import Job
+
+            jobs = (
+                await uow.session.scalars(
+                    select(Job)
+                    .where(Job.actor_id == actor.user_id, Job.status == JobStatus.WAITING_AUTH)
+                    .order_by(Job.created_at, Job.id)
+                    .limit(100)
+                )
+            ).all()
+            return tuple(
+                {"id": str(j.id), "kind": j.kind, "version": j.version, "status": j.status.value}
+                for j in jobs
             )
 
     async def close_obsolete(self, leased: LeasedJob) -> bool:

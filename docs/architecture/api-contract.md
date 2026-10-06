@@ -245,3 +245,16 @@ execute 路径固定 action_id，JSON 体提交 expected_action_version（Action
 - SSE 重连只回放仍有权限的事件，累计文本不会因重放重复追加。
 - expected_version 不符时返回冲突，不静默覆盖。
 - 入库、发布和撤回均返回真实状态，允许后台索引尚未完成。
+
+## H 阶段增量：后台任务恢复与供应商对账
+
+均使用现有响应/错误 envelope、Cookie 会话和写操作 CSRF 校验，并要求当前站长额外验证。
+
+| 方法与路径 | 语义 |
+| --- | --- |
+| GET /api/owner/jobs | 本人 waiting_auth 任务的 ID、类型、版本，不返回 payload/token |
+| POST /api/owner/jobs/{id}/resume | expected_version CAS；仅文件/知识任务，换绑本人当前 Session，无未结清调用 |
+| GET /api/owner/provider-calls/unknown | 最多 100 条未知账本元数据和当前 Run 仲裁版本，不返回提示/正文 |
+| POST /api/owner/provider-calls/{id}/reconcile | 人工确认供应商终态、证据摘要与费用；重复同一回执幂等，不恢复任务或生成回复 |
+
+对账请求 schema 与处理边界见 [H 阶段说明](../../backend/H_STAGE_WORKERS.md)。聊天 Run 的恢复沿用原接口，不经此任务接口恢复已确认动作；对账不作为 Agent 工具。

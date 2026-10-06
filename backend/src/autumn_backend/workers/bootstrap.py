@@ -11,7 +11,9 @@ from autumn_backend.config import get_settings
 from autumn_backend.db.session import UnitOfWorkFactory, create_engine, create_session_factory
 from autumn_backend.jobs.queue import Queue
 from autumn_backend.services.action_execution import ActionExecutionService
+from autumn_backend.services.conversation_cleanup import ConversationCleanupService
 from autumn_backend.services.knowledge import KnowledgeService
+from autumn_backend.services.maintenance import MaintenanceService
 from autumn_backend.services.run_cancellation import RunCancellationService
 from autumn_backend.services.storage import StorageService
 from autumn_backend.services.tasks import TaskService
@@ -38,6 +40,7 @@ def configured_worker(
     tasks = TaskService(uows)
     handlers = {**storage_handlers(storage, tasks), **cleanup_handlers(uows)}
     handlers["action.execute"] = ActionExecutionService(uows).execute
+    handlers["conversation.cleanup"] = ConversationCleanupService(uows).execute
 
     async def cancel(provider: str, name: str, key: str) -> None:
         if model is not None and (provider, name) == (model.provider, model.model):
@@ -52,7 +55,9 @@ def configured_worker(
         if knowledge is None or saver is None:
             raise ValueError("运行任务必须配置知识服务和持久检查点")
         handlers.update(run_handlers(agent_runtime(uows, knowledge, model, saver)))
-    return Worker(Queue(uows), Registry(handlers), tasks.failure)
+    return Worker(
+        Queue(uows), Registry(handlers), tasks.failure, maintenance=MaintenanceService(uows).tick
+    )
 
 
 @asynccontextmanager

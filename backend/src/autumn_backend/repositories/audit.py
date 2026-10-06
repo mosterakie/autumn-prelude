@@ -28,6 +28,8 @@ class AuditMetadata:
     run_id: UUID | None = None
     job_id: UUID | None = None
     comment_id: UUID | None = None
+    provider_call_id: UUID | None = None
+    receipt_sha256: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         values: dict[str, Any] = {}
@@ -55,7 +57,11 @@ class AuditMetadata:
             ):
                 raise InvalidInputError("审计字段名无效")
             values["changed_fields"] = list(self.changed_fields)
-        for name in ("publication_id", "run_id", "job_id", "comment_id"):
+        if self.receipt_sha256 is not None:
+            if not re.fullmatch(r"[0-9a-f]{64}", self.receipt_sha256):
+                raise InvalidInputError("对账证据摘要无效")
+            values["receipt_sha256"] = self.receipt_sha256
+        for name in ("publication_id", "run_id", "job_id", "comment_id", "provider_call_id"):
             identifier = getattr(self, name)
             if identifier is not None:
                 values[name] = str(identifier)

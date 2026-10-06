@@ -43,3 +43,23 @@ async def test_confirmed_action_worker_publication_settings_and_memory(e_case: S
         assert (await uow.repositories.settings.get("ai_limits")).version == 1
         memories = await uow.repositories.memories.for_user(e_case.owner.user_id)
         assert memories.items[0].confirmed_at is not None
+
+
+async def test_stale_confirmed_target_fails_action_without_partial_write(
+    e_case: ServiceCase,
+) -> None:
+    actions = ActionService(e_case.uows)
+    preview = await actions.preview(e_case.owner, command(e_case), idempotency_key=uuid4().hex)
+    await actions.confirm(
+        e_case.owner,
+        preview.id,
+        expected_action_version=preview.version,
+        parameters_hash=preview.parameters_hash,
+    )
+    async with e_case.uows() as uow:
+        await uow.repositories.resources.set_archived(
+            e_case.resource_id, expected_version=0, expected_acl_version=1, archived=True
+        )
+    assert await configured_worker(e_case.uows, service_for(e_case).storage).run_once()
+    result = await actions.read(e_case.owner, preview.id)
+    assert result.status is ActionStatus.FAILED

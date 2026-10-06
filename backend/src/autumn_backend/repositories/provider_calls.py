@@ -4,13 +4,13 @@ import hashlib
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from autumn_backend.db.enums import ProviderCallPurpose
 from autumn_backend.db.enums import ProviderCallStatus as Status
 from autumn_backend.db.models import ProviderCall
-from autumn_backend.errors import ConflictError, InvalidInputError
+from autumn_backend.errors import ConflictError, InvalidInputError, OptimisticLockError
 from autumn_backend.repositories.base import ControlledMutableRepository
 from autumn_backend.repositories.constraints import database_errors
 from autumn_backend.repositories.result import Creation
@@ -195,3 +195,48 @@ class ProviderCallRepository(ControlledMutableRepository[ProviderCall]):
             Status.UNKNOWN,
             {"finished_at": func.clock_timestamp(), "error_code": error_code},
         )
+
+    async def reconcile_unknown(
+        self,
+        call_id: UUID,
+        *,
+        expected_version: int,
+        status: Status,
+        external_request_id: str,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        search_units: int | None,
+        actual_cost: Decimal | None,
+        currency: str | None,
+    ) -> ProviderCall:
+        if status not in (Status.SUCCEEDED, Status.FAILED):
+            raise InvalidInputError("对账只接受已确定的终态")
+        self._validate_cost(actual_cost, currency)
+        with database_errors():
+            call = (
+                await self.session.execute(
+                    update(ProviderCall)
+                    .where(
+                        ProviderCall.id == call_id,
+                        ProviderCall.status == Status.UNKNOWN,
+                        ProviderCall.version == expected_version,
+                    )
+                    .values(
+                        status=status,
+                        external_request_id=external_request_id,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        search_units=search_units,
+                        actual_cost=actual_cost,
+                        currency=currency,
+                        finished_at=func.clock_timestamp(),
+                        error_code="reconciled_failed" if status is Status.FAILED else None,
+                        version=ProviderCall.version + 1,
+                    )
+                    .returning(ProviderCall)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one_or_none()
+        if call is None:
+            raise OptimisticLockError("对账对象已变化")
+        return call

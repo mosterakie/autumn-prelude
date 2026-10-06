@@ -27,6 +27,7 @@ from autumn_backend.api.comments import router as comment_router
 from autumn_backend.api.errors import install_error_handlers
 from autumn_backend.api.events import router as event_router
 from autumn_backend.api.middleware import install_request_middleware
+from autumn_backend.api.provider_reconciliation import router as reconciliation_router
 from autumn_backend.api.public import router as public_router
 from autumn_backend.api.quota import router as quota_router
 from autumn_backend.api.resources import router as resource_router
@@ -39,6 +40,7 @@ from autumn_backend.services.actions import ActionService
 from autumn_backend.services.chats import ChatService
 from autumn_backend.services.comments import CommentService
 from autumn_backend.services.events import EventService
+from autumn_backend.services.provider_reconciliation import ProviderReconciliationService
 from autumn_backend.services.public import PublicService
 from autumn_backend.services.publication import PublicationService
 from autumn_backend.services.quota import QuotaService
@@ -70,6 +72,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.public = PublicService(app.state.uows, app.state.storage.store)
         app.state.actions = ActionService(app.state.uows)
         app.state.tasks = TaskService(app.state.uows)
+        app.state.provider_reconciliation = ProviderReconciliationService(app.state.uows)
         app.state.publications = PublicationService(app.state.uows)
         app.state.chats = ChatService(app.state.uows)
         app.state.runs = RunService(app.state.uows, settings=settings)
@@ -119,6 +122,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(event_router)
     app.include_router(resource_router)
     app.include_router(task_router)
+    app.include_router(reconciliation_router)
     app.include_router(public_router)
     app.include_router(comment_router)
     app.include_router(action_router)

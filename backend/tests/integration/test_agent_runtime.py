@@ -8,7 +8,13 @@ from sqlalchemy import select
 from autumn_backend.agent.context import ContextLoader
 from autumn_backend.agent.runtime import AgentRuntime
 from autumn_backend.agent.tools import Tools
-from autumn_backend.db.enums import JobStatus, MessageRole, ProviderCallStatus, RunStatus
+from autumn_backend.db.enums import (
+    JobStatus,
+    MessageRole,
+    ProviderCallPurpose,
+    ProviderCallStatus,
+    RunStatus,
+)
 from autumn_backend.db.models import Message, ProviderCall
 from autumn_backend.io_boundary import active_uows
 from autumn_backend.repositories.publications import PublicationProjection
@@ -112,9 +118,11 @@ async def test_graph_search_reply_persists_all_model_sources_and_charges_once(
         calls = (
             await uow.session.scalars(select(ProviderCall).where(ProviderCall.run_id == run.id))
         ).all()
-        assert len(calls) == 2 and all(
+        assert len(calls) == 3 and all(
             call.status is ProviderCallStatus.SUCCEEDED for call in calls
         )
+        assert sum(call.purpose is ProviderCallPurpose.CHAT for call in calls) == 2
+        assert sum(call.purpose is ProviderCallPurpose.EMBEDDING for call in calls) == 1
     quota = await QuotaService(e_case.uows).current(e_case.member)
     assert (quota.used, quota.reserved) == (1, 0)
 
@@ -189,6 +197,7 @@ async def test_acl_change_during_request_stops_upstream_and_discards_reply(
             )
         ).all()
         assert [call.status for call in calls] == [
+            ProviderCallStatus.SUCCEEDED,
             ProviderCallStatus.SUCCEEDED,
             ProviderCallStatus.UNKNOWN,
         ]

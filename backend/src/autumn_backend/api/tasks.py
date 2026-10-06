@@ -19,6 +19,14 @@ class ResumeTask(BaseModel):
     expected_version: int = Field(ge=0)
 
 
+@router.get("")
+async def waiting(request: Request) -> JSONResponse:
+    service = getattr(request.app.state, "tasks", None)
+    if not isinstance(service, TaskService):
+        raise ConfigurationError("后台任务服务未初始化")
+    return success(request, {"items": await service.waiting(authenticated_actor(request))})
+
+
 @router.post("/{job_id}/resume", status_code=202)
 async def resume(request: Request, job_id: UUID, body: ResumeTask) -> JSONResponse:
     service = getattr(request.app.state, "tasks", None)
