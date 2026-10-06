@@ -5,12 +5,14 @@ from uuid import UUID
 
 from sqlalchemy import func, or_, select, update
 
+from autumn_backend.db.enums import ResourceKind
 from autumn_backend.db.models import Publication, Resource, ResourceVersion
 from autumn_backend.db.models.content import PUBLIC_FIELD_NAMES
 from autumn_backend.errors import ConflictError, InvalidInputError, OptimisticLockError
 from autumn_backend.repositories.base import ControlledMutableRepository, UUIDRepository
 from autumn_backend.repositories.constraints import database_errors
 from autumn_backend.repositories.identity import SettingRepository
+from autumn_backend.repositories.pagination import Page, fetch_page
 
 
 class ResourceLockRepository(UUIDRepository[Resource]):
@@ -26,6 +28,24 @@ class PublicationProjection:
 
 class PublicationRepository(ControlledMutableRepository[Publication]):
     model = Publication
+
+    async def public_page(
+        self, *, kind: ResourceKind, tag: str | None, limit: int, cursor: str | None
+    ) -> Page[Publication]:
+        query = (
+            select(Publication)
+            .join(Resource, Resource.id == Publication.resource_id)
+            .where(
+                Resource.kind == kind,
+                Resource.deleted_at.is_(None),
+                Resource.archived_at.is_(None),
+                or_(Resource.expires_at.is_(None), Resource.expires_at > func.clock_timestamp()),
+                Publication.revoked_at.is_(None),
+            )
+        )
+        if tag is not None:
+            query = query.where(Publication.public_tags.contains([tag]))
+        return await fetch_page(self.session, Publication, query, limit=limit, cursor=cursor)
 
     async def current_for_resource(self, resource_id: UUID) -> Publication | None:
         """调用方先锁 Resource；此方法只返回未撤回投影，公开读取仍走可见性过滤。"""

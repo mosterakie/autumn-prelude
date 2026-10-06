@@ -27,6 +27,7 @@ from autumn_backend.repositories.audit import AuditMetadata
 from autumn_backend.repositories.jobs import JobSpec
 from autumn_backend.repositories.resources import RevisionDraft
 from autumn_backend.services.access import lock_authentication, publication_facts, require_allowed
+from autumn_backend.services.public import public_dto
 from autumn_backend.services.storage import StorageService
 
 
@@ -188,17 +189,7 @@ class ResourceService:
             "created_at": resource.created_at,
             "archived_at": resource.archived_at,
             "current_revision": revision_dto(current) if current else None,
-            "publication": {
-                "id": publication.id,
-                "revision_id": publication.revision_id,
-                "publication_no": publication.publication_no,
-                "public_fields": publication.public_fields,
-                "ai_enabled": publication.ai_enabled,
-                "raw_download_enabled": publication.raw_download_enabled,
-                "published_at": publication.created_at,
-            }
-            if publication
-            else None,
+            "publication": public_dto(resource, publication) if publication else None,
             "processing_jobs": [
                 {
                     "id": job.id,
