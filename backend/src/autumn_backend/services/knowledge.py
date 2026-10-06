@@ -554,6 +554,7 @@ class KnowledgeService:
         message_ids: tuple[UUID, ...] = (),
         summary_id: UUID | None = None,
         memory_ids: tuple[UUID, ...] = (),
+        fence: TaskFence | None = None,
     ) -> tuple[str, ...]:
         """G 只能将此入口返回的历史/摘要/记忆与 retrieve 返回的片段送入模型。"""
         if len(message_ids) + len(memory_ids) > 200:
@@ -562,6 +563,8 @@ class KnowledgeService:
             current_actor, facts, run = await run_facts(
                 uow, actor, run_id, Operation.READ_RUN, require_context=False
             )
+            if fence is not None:
+                await require_task(uow, actor, run, fence)
             assert facts.target is not None
             origin_ids: set[UUID] = set()
             texts = []
@@ -700,7 +703,47 @@ class KnowledgeService:
             }
             run.version += 1
             await uow.session.flush()
+            if fence is not None:
+                await run_facts(uow, actor, run_id, Operation.CONTINUE_RUN)
+                await require_task(uow, actor, run, fence)
             return tuple(texts)
+
+    async def current_sources(
+        self, actor: ActorContext, run_id: UUID, *, fence: TaskFence
+    ) -> tuple[Citation, ...]:
+        """恢复时重读当前代际获准片段；不复用 checkpoint 或旧工具载荷。"""
+        async with self._uows() as uow:
+            _, _, run = await run_facts(uow, actor, run_id, Operation.CONTINUE_RUN)
+            await require_task(uow, actor, run, fence)
+            sources = await uow.repositories.knowledge.sources(
+                run_id, context_generation=run.execution_generation
+            )
+            result = []
+            for source in sources:
+                chunk = (
+                    await uow.session.get(KnowledgeChunk, source.chunk_id)
+                    if source.chunk_id
+                    else None
+                )
+                if source.chunk_id is not None and (
+                    chunk is None or chunk.index_id != source.index_id
+                ):
+                    raise ConflictError("获准来源片段缺失或归属无效")
+                text = chunk.content_text if chunk else source.excerpt or ""
+                if text:
+                    result.append(
+                        Citation(
+                            source.id,
+                            text,
+                            source.resource_id,
+                            source.revision_id,
+                            source.publication_id,
+                            source.locator,
+                        )
+                    )
+            await run_facts(uow, actor, run_id, Operation.CONTINUE_RUN)
+            await require_task(uow, actor, run, fence)
+            return tuple(result)
 
     async def record_web_sources(
         self, actor: ActorContext, run_id: UUID, pages: tuple[WebPage, ...], *, fetched_at: datetime

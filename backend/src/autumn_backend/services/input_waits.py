@@ -21,7 +21,12 @@ from autumn_backend.policies.facts import Operation
 from autumn_backend.repositories.jobs import JobSpec
 from autumn_backend.services.actions import Payload
 from autumn_backend.services.ai_limits import read_ai_limits
-from autumn_backend.services.context import advance_context_generation, run_facts
+from autumn_backend.services.context import (
+    TaskFence,
+    advance_context_generation,
+    require_task,
+    run_facts,
+)
 
 
 class InputRequest(Payload):
@@ -74,9 +79,12 @@ class InputWaitService:
         wait_id: UUID,
         prompt: str,
         options: tuple[str, ...] = (),
+        fence: TaskFence | None = None,
     ) -> InputRequest:
         async with self._uows() as uow:
             _, facts, run = await run_facts(uow, actor, run_id, Operation.CONTINUE_RUN)
+            if fence is not None:
+                await require_task(uow, actor, run, fence)
             if run.input_request is not None:
                 previous = load_input(run.input_request)
                 if previous.id == wait_id:
@@ -110,6 +118,13 @@ class InputWaitService:
                     "schema_version": 1,
                 },
             )
+            if fence is not None:
+                await run_facts(uow, actor, run_id, Operation.CONTINUE_RUN)
+                await uow.repositories.jobs.finish(
+                    fence.job_id,
+                    fence.token,
+                    result={"run_id": str(run_id), "input_request_id": str(wait_id)},
+                )
             return request
 
     async def answer(

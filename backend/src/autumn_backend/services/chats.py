@@ -394,7 +394,31 @@ class ChatService:
         if not resume or wait_id is not None or answer is not None:
             raise InvalidInputError("恢复参数无效")
         async with self.uows() as uow:
-            _, _, run = await run_facts(uow, actor, identifier, Operation.RESUME_RUN)
+            _, facts, run = await run_facts(
+                uow, actor, identifier, Operation.READ_RUN, require_context=False
+            )
+            manifest = run.config_snapshot.get("context_manifest", {})
+            # 验证在首个上下文装配前过期：只有当前 epoch 的空闭包可以补齐。
+            if (
+                run.status is RunStatus.WAITING_AUTH
+                and run.error_code in ("SESSION_EXPIRED", "STEP_UP_REQUIRED")
+                and isinstance(manifest, dict)
+                and manifest.get("complete") is False
+                and run.scope_epoch == facts.current_scope_epoch
+                and not await uow.repositories.knowledge.sources(
+                    run.id, context_generation=run.execution_generation
+                )
+            ):
+                run.config_snapshot = {
+                    **run.config_snapshot,
+                    "context_manifest": {
+                        "schema_version": 1,
+                        "complete": True,
+                        "context_generation": run.execution_generation,
+                    },
+                }
+                await uow.session.flush()
+            await run_facts(uow, actor, identifier, Operation.RESUME_RUN)
             if run.status is RunStatus.QUEUED and run.auth_session_id == actor.auth_session_id:
                 return await self._run_dto(uow, actor, run)
             if run.status is not RunStatus.WAITING_AUTH:
@@ -410,6 +434,7 @@ class ChatService:
                 actor.auth_session_id,
                 run.version + 1,
             )
+            run.error_code = None
             await advance_context_generation(uow, run, preserve_sources=True)
             await uow.session.flush()
             await uow.repositories.jobs.enqueue(
