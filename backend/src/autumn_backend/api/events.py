@@ -53,11 +53,16 @@ async def events(
     async def stream(first: EventBatch) -> AsyncIterator[str]:
         batch = first
         heartbeat = monotonic()
+        sent_messages: set[str] = set()
         try:
             while True:
                 for item in batch.events:
                     if await request.is_disconnected():
                         return
+                    if item.name == "message.snapshot" and isinstance(item.data, dict):
+                        message_id = item.data.get("message_id")
+                        if message_id is not None:
+                            sent_messages.add(str(message_id))
                     yield encode(item)
                 if batch.close or await request.is_disconnected():
                     return
@@ -73,7 +78,11 @@ async def events(
                 if isinstance(error, AuthorizationError)
                 else error.code.upper()
             )
-            yield encode(StreamEvent("source.invalidated", {"message_ids": [], "reason": code}))
+            yield encode(
+                StreamEvent(
+                    "source.invalidated", {"message_ids": sorted(sent_messages), "reason": code}
+                )
+            )
             yield encode(
                 StreamEvent(
                     "error",

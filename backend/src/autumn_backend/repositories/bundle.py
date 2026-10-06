@@ -24,6 +24,7 @@ from autumn_backend.repositories.provider_calls import ProviderCallRepository
 from autumn_backend.repositories.publications import PublicationRepository
 from autumn_backend.repositories.quota import QuotaBucketRepository, QuotaReservationRepository
 from autumn_backend.repositories.rate_limits import RateLimitRepository
+from autumn_backend.repositories.reports import ReportRepository
 from autumn_backend.repositories.resources import ResourceRepository
 from autumn_backend.repositories.runs import RunEventRepository, RunRepository
 
@@ -51,6 +52,7 @@ class Repositories:
     files: FileRepository
     knowledge: KnowledgeRepository
     auth_credentials: AuthCredentialRepository
+    reports: ReportRepository
 
     @classmethod
     def bind(cls, session: AsyncSession, access_guard: Callable[[], None]) -> "Repositories":
@@ -76,4 +78,5 @@ class Repositories:
             files=FileRepository(session, access_guard=access_guard),
             knowledge=KnowledgeRepository(session, access_guard=access_guard),
             auth_credentials=AuthCredentialRepository(session, access_guard=access_guard),
+            reports=ReportRepository(session, access_guard=access_guard),
         )

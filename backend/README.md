@@ -9,8 +9,8 @@
 
 实施顺序见《秋序_v1.0_功能点实施顺序》与《v1.1 评审修订建议》。
 
-当前进度：**A1–A7、B1–B12、C 核心并发、D 纯权限、E1–E8 应用服务、F1–F3 API 认证完成**。
-**28 张表**、4 个基线迁移 + B8 留言请求身份与 E8 运行/来源代际增量迁移。
+当前进度：**A1–A7、B1–B12、C 核心并发、D 纯权限、E1–E8 应用服务、F1–F8 API 完成**。
+**28 张表**、4 个基线迁移 + B8 留言请求身份、E8 运行/来源代际与 F4 原稿动作枚举增量迁移；最新为 `a7c19e23b806`。
 基线完成空库/并发验收；E 完成 29 项流程与 2 项结构基础核对、增量迁移回退/升级及 `alembic check`。
 节点、验证结果与后续边界见 [DEVELOPMENT.md](DEVELOPMENT.md)。
 数据契约的存储归属、枚举映射与有意偏离见 [DATA_CONTRACT.md](DATA_CONTRACT.md)。
@@ -19,7 +19,7 @@
 问答受理、角色限额、重试和固定额度桶见 [RUN_SERVICE.md](RUN_SERVICE.md)。
 留言提交、一级回复、重复请求与错误边界见 [COMMENT_SERVICE.md](COMMENT_SERVICE.md)。
 额度、文件、知识库、动作等待与正式结果提交见 [E_STAGE_SERVICES.md](E_STAGE_SERVICES.md)。
-邮箱密码/会话认证已接入，说明见 [AUTH_CONTRACT.md](AUTH_CONTRACT.md)。内容/聊天 API 与 SSE、LangGraph、Worker 循环与业务 handler、真实供应商适配继续按 F/G/H/I 接入。
+邮箱密码/会话认证已接入，说明见 [AUTH_CONTRACT.md](AUTH_CONTRACT.md)。已交付 API、SSE、版本/动作请求体及剩余入口见 [F_STAGE_API.md](F_STAGE_API.md)。LangGraph、Worker 循环与业务 handler、真实邮件/供应商适配继续按 G/H/I 接入。
 
 ### 阶段 A 验收与评审修复
 

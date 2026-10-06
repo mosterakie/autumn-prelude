@@ -2,15 +2,19 @@
 
 import hashlib
 import json
+from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import aliased
 
+from autumn_backend.db.enums import CommentStatus
 from autumn_backend.db.models import Comment
 from autumn_backend.errors import ConflictError, IdempotencyConflictError, InvalidInputError
 from autumn_backend.repositories.base import VersionedRepository
 from autumn_backend.repositories.constraints import database_errors
+from autumn_backend.repositories.pagination import Page, fetch_page
 from autumn_backend.repositories.result import Creation
 
 
@@ -33,6 +37,65 @@ def request_hash(resource_id: UUID | None, parent_id: UUID | None, body: str) ->
 
 class CommentRepository(VersionedRepository[Comment]):
     model = Comment
+    mutable_fields = frozenset({"body", "status", "moderated_by", "moderated_at", "deleted_at"})
+
+    async def page(
+        self,
+        *,
+        resource_id: UUID | None = None,
+        status: CommentStatus | None = None,
+        public: bool = False,
+        limit: int = 20,
+        cursor: str | None = None,
+    ) -> Page[Comment]:
+        query = select(Comment).where(Comment.deleted_at.is_(None))
+        if public:
+            parent = aliased(Comment)
+            query = query.outerjoin(parent, parent.id == Comment.parent_id).where(
+                Comment.resource_id.is_(None)
+                if resource_id is None
+                else Comment.resource_id == resource_id,
+                Comment.status == CommentStatus.APPROVED,
+                or_(
+                    Comment.parent_id.is_(None),
+                    (parent.status == CommentStatus.APPROVED) & parent.deleted_at.is_(None),
+                ),
+            )
+        elif status is not None:
+            query = query.where(Comment.status == status)
+        return await fetch_page(self.session, Comment, query, limit=limit, cursor=cursor)
+
+    async def edit(self, comment_id: UUID, expected_version: int, body: str) -> Comment:
+        return await self._update_versioned(
+            comment_id,
+            expected_version,
+            {
+                "body": normalize_body(body),
+                "status": CommentStatus.PENDING,
+                "moderated_by": None,
+                "moderated_at": None,
+            },
+        )
+
+    async def decide(
+        self,
+        comment_id: UUID,
+        expected_version: int,
+        status: CommentStatus,
+        moderator_id: UUID,
+    ) -> Comment:
+        return await self._update_versioned(
+            comment_id,
+            expected_version,
+            {
+                "status": status,
+                "moderated_by": moderator_id,
+                "moderated_at": await self.database_time(),
+            },
+        )
+
+    async def soft_delete(self, comment_id: UUID, expected_version: int, at: datetime) -> Comment:
+        return await self._update_versioned(comment_id, expected_version, {"deleted_at": at})
 
     async def by_client_id(
         self, author_id: UUID, client_id: UUID, *, lock: bool = False

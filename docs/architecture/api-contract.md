@@ -1,6 +1,6 @@
 # 秋序前后端接口契约
 
-版本：v1.1。本文约定首版接口，不表示这些端点已经实现。前端实现补充了会话恢复元数据与公开权限版本字段；后续以 FastAPI 输出的 OpenAPI 与本文一致性检查维护契约。
+版本：v1.1。本文约定首版接口，不表示这些端点已经实现。F1–F8 已交付范围、实际动作请求体与后续入口见 [F 阶段接口说明](../../backend/F_STAGE_API.md)。前端实现补充了会话恢复元数据与公开权限版本字段；后续以 FastAPI 输出的 OpenAPI 与本文一致性检查维护契约。
 
 ## 1 通用约定
 
@@ -8,7 +8,7 @@
 
 成功返回 {data, request_id}，列表返回 {data: {items, next_cursor}, request_id}。创建通常为 201，受理异步任务为 202，读取或修改为 200，删除成功为 204。列表默认 20 条、最大 100 条，采用服务端生成的游标。
 
-请求携带 Cookie；已认证写请求另带 X-CSRF-Token。GET 不修改业务状态。Idempotency-Key 用于 /ask、站长创建资源或入库、动作预览及执行请求，限制为 128 字符内的随机标识。资源写入去重由 actions 记录，异步入库另用 jobs 的键防止重复排队；统一加用户与操作类型范围。留言使用 client_id 去重。客户端不能提交 role、owner_id、tool_permissions 或任意模型密钥。
+请求携带 Cookie；已认证写请求另带 X-CSRF-Token。GET 不修改业务状态。Idempotency-Key 用于 /ask、站长创建资源或入库、动作预览，限制为 128 字符内的随机标识。资源写入去重由 actions 记录，异步入库另用 jobs 的键防止重复排队；统一加用户与操作类型范围。固定动作执行以持久 action_id、版本和参数哈希去重，无须另建执行请求身份。留言使用 client_id 去重。客户端不能提交 role、owner_id、tool_permissions 或任意模型密钥。
 
 资源修改携带 expected_version；与数据库当前版本不符返回 409，不覆盖对方更新。同幂等键但不同请求体返回 409 IDEMPOTENCY_CONFLICT；同键同体返回原结果或原任务。
 
@@ -83,7 +83,7 @@ timezone、window_start、window_end、daily_limit、used、reserved、remaining
 | GET /api/public/comments | 所有人 | resource_id 可空；仅已审核且仍可公开访问的留言 |
 | POST /api/comments | 已验证用户 | resource_id 可空、parent_id 可空、body、client_id；返回 pending 或 approved |
 | PATCH /api/comments/{id} | 作者本人 | body、expected_version；修改已审核内容重新审核 |
-| DELETE /api/comments/{id} | 作者本人或已升级站长 | 主动删除，204 |
+| DELETE /api/comments/{id} | 作者本人或已升级站长 | JSON 体 expected_version；主动删除，204 |
 | POST /api/reports | 已验证用户 | comment_id、reason；受理举报 |
 
 PublicResourceDTO 为 id、kind、slug、publication_id、publication_no、title、body、note、url、tags、published_at、ai_enabled、raw_download_enabled。未选择公开的 body、note、url 不返回，不能把 private_note 包含在响应再让 UI 隐藏。
@@ -230,9 +230,9 @@ preview 返回 ActionDTO 与预览，不立即发布。站长点击确认后执�
 | POST /api/moderation/reports/{id}/resolve | 站长；resolution |
 | GET /api/audit-events | 站长；按对象和时间查询脱敏操作记录 |
 
-ActionDTO 包括 id、type、target、expected_version、expected_acl_version、parameters_hash、summary、changes、impact、requires_confirmation、status、expires_at、can_undo、result。expected_acl_version 在公开权限操作中必填，执行时与内容版本一起重新检查，避免旧预览覆盖已改变的权限。status 为 proposed、awaiting_confirmation、ready、running、succeeded、failed、cancelled、expired。
+ActionDTO 包括 id、version、type、target、target_id、expected_version、expected_acl_version、parameters_hash、summary、changes、impact、requires_confirmation、status、expires_at、can_undo、result。version 是动作自身版本，expected_version 是预览目标版本，不能混用。expected_acl_version 在公开权限操作中必填，执行时与内容版本一起重新检查，避免旧预览覆盖已改变的权限。status 为 proposed、awaiting_confirmation、ready、running、succeeded、failed、cancelled、expired。
 
-execute 只提交 action_id 与本次展示的 parameters_hash，不允许替换目标或参数。权限、版本和到期时间均重新检查。已成功执行的同一动作返回既有结果；undo 是新的补偿动作，不修改历史成功记录，也不能撤回已经传播出去的公开内容。
+execute 路径固定 action_id，JSON 体提交 expected_action_version（ActionDTO.version）与本次展示的 parameters_hash；cancel 体提交 expected_action_version。不允许替换目标或参数。权限、版本和到期时间均重新检查。确认返回 202，初次为 ready 并持久入队；实际执行由 Worker 处理。已成功执行的同一动作返回既有结果；undo 是新的补偿动作，不修改历史成功记录，也不能撤回已经传播出去的公开内容。F 阶段当前 can_undo=false，补偿撤销仍为计划接口。
 
 暂不提供通过 AI 修改登录凭据、管理员角色或任意服务器设置的接口。需要的管理能力按白名单逐项加入。
 

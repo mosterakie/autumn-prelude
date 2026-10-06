@@ -2,13 +2,19 @@
 
 from dataclasses import dataclass, replace
 from datetime import datetime
+from typing import Any, Literal
 from uuid import UUID
 
-from autumn_backend.db.enums import AuditResult, CommentStatus
-from autumn_backend.db.models import Resource
+from autumn_backend.db.enums import AuditResult, CommentStatus, ReportStatus
+from autumn_backend.db.models import Comment, Report, Resource
 from autumn_backend.db.session import UnitOfWork, UnitOfWorkFactory
-from autumn_backend.errors import ConflictError, InvalidInputError, NotFoundError
-from autumn_backend.policies import ActorContext
+from autumn_backend.errors import (
+    ConflictError,
+    InvalidInputError,
+    NotFoundError,
+    OptimisticLockError,
+)
+from autumn_backend.policies import ActorContext, ActorRole
 from autumn_backend.policies.facts import (
     AuthenticationFacts,
     Operation,
@@ -55,6 +61,309 @@ class CommentDTO:
 class CommentService:
     def __init__(self, uows: UnitOfWorkFactory) -> None:
         self._uows = uows
+
+    @staticmethod
+    def _text(value: str) -> str:
+        if not value.strip() or len(value) > 2000:
+            raise InvalidInputError("内容不能为空或超过 2000 字符")
+        return value.replace("\r\n", "\n").replace("\r", "\n")
+
+    @staticmethod
+    async def _dto(uow: UnitOfWork, comment: Comment) -> CommentDTO:
+        author = await uow.repositories.users.get(comment.author_id)
+        return CommentDTO(
+            id=comment.id,
+            resource_id=comment.resource_id,
+            parent_id=comment.parent_id,
+            author_display_name=author.display_name or "秋序访客" if author else "秋序访客",
+            body=comment.body,
+            status=comment.status,
+            created_at=comment.created_at,
+            updated_at=comment.updated_at,
+            version=comment.version,
+        )
+
+    @staticmethod
+    def _target(comment: Comment) -> TargetFacts:
+        return TargetFacts(
+            object_id=comment.id,
+            kind=TargetKind.COMMENT,
+            owner_id=comment.author_id,
+            resource_id=comment.resource_id,
+            is_deleted=comment.deleted_at is not None,
+            comment_approved=comment.status is CommentStatus.APPROVED,
+        )
+
+    async def _locked(
+        self,
+        uow: UnitOfWork,
+        actor: ActorContext,
+        comment_id: UUID,
+        operation: Operation,
+    ) -> tuple[Comment, PolicyFacts]:
+        auth = await lock_authentication(uow, actor)
+        probe = await uow.repositories.comments.get_or_raise(comment_id)
+        resource = (
+            await uow.repositories.resources.get_for_update(probe.resource_id)
+            if probe.resource_id
+            else None
+        )
+        parent = (
+            await uow.repositories.comments.get_for_update(probe.parent_id)
+            if probe.parent_id
+            else None
+        )
+        comment = await uow.repositories.comments.get_for_update_or_raise(comment_id)
+        facts = replace(
+            await self._facts(uow, auth, resource, comment.resource_id),
+            operation=operation,
+            target=self._target(comment),
+        )
+        require_allowed(actor, facts)
+        if (
+            operation in (Operation.READ_PUBLIC_COMMENT, Operation.REPORT_COMMENT)
+            and comment.parent_id is not None
+        ):
+            if parent is None or parent.resource_id != comment.resource_id:
+                raise NotFoundError("留言不存在")
+            require_allowed(
+                actor,
+                replace(
+                    facts, operation=Operation.READ_PUBLIC_COMMENT, target=self._target(parent)
+                ),
+            )
+        return comment, facts
+
+    async def public_page(
+        self, *, resource_id: UUID | None, limit: int, cursor: str | None
+    ) -> dict[str, Any]:
+        anonymous = ActorContext(
+            user_id=None,
+            role=ActorRole.ANONYMOUS,
+            auth_session_id=None,
+            step_up_expires_at=None,
+            capabilities=frozenset(),
+            scope_epoch=0,
+        )
+        async with self._uows() as uow:
+            if resource_id is not None:
+                resource = await uow.repositories.resources.get_for_update(resource_id)
+                require_allowed(
+                    anonymous,
+                    replace(
+                        await self._facts(uow, None, resource, resource_id),
+                        operation=Operation.READ_PUBLIC_RESOURCE,
+                    ),
+                )
+            page = await uow.repositories.comments.page(
+                resource_id=resource_id, public=True, limit=limit, cursor=cursor
+            )
+            # 固定父 -> 子顺序；即使父留言不在当前页，也要锁定并复核其可见性。
+            roots = {item.parent_id for item in page.items if item.parent_id is not None}
+            roots.update(item.id for item in page.items if item.parent_id is None)
+            for parent_id in sorted(roots):
+                await uow.repositories.comments.get_for_update(parent_id)
+            allowed = {}
+            for candidate in sorted(
+                page.items, key=lambda item: (item.parent_id is not None, item.id.int)
+            ):
+                try:
+                    record, _ = await self._locked(
+                        uow, anonymous, candidate.id, Operation.READ_PUBLIC_COMMENT
+                    )
+                    allowed[record.id] = await self._dto(uow, record)
+                except NotFoundError:
+                    continue
+            return {
+                "items": [allowed[item.id] for item in page.items if item.id in allowed],
+                "next_cursor": page.next_cursor,
+            }
+
+    async def edit(
+        self, actor: ActorContext, comment_id: UUID, *, body: str, expected_version: int
+    ) -> CommentDTO:
+        body = self._text(body)
+        async with self._uows() as uow:
+            previous, _ = await self._locked(uow, actor, comment_id, Operation.EDIT_COMMENT)
+            before = previous.status.value
+            record = await uow.repositories.comments.edit(comment_id, expected_version, body)
+            await self._audit(uow, actor, record, "edit", before=before)
+            await self._locked(uow, actor, comment_id, Operation.EDIT_COMMENT)
+            return await self._dto(uow, record)
+
+    async def delete(self, actor: ActorContext, comment_id: UUID, *, expected_version: int) -> None:
+        async with self._uows() as uow:
+            record, facts = await self._locked(uow, actor, comment_id, Operation.DELETE_COMMENT)
+            record = await uow.repositories.comments.soft_delete(
+                comment_id, expected_version, facts.now
+            )
+            await self._audit(uow, actor, record, "delete")
+            require_allowed(actor, replace(facts, now=await uow.repositories.users.database_time()))
+
+    async def _moderator(self, uow: UnitOfWork, actor: ActorContext) -> None:
+        auth = await lock_authentication(uow, actor)
+        require_allowed(
+            actor,
+            PolicyFacts(
+                operation=Operation.MANAGE_MODERATION,
+                authentication=auth,
+                now=await uow.repositories.users.database_time(),
+                current_scope_epoch=await uow.repositories.settings.get_acl_epoch(),
+            ),
+        )
+
+    async def moderation_page(
+        self,
+        actor: ActorContext,
+        *,
+        status: Literal["pending", "approved", "rejected", "hidden"] | None,
+        limit: int,
+        cursor: str | None,
+    ) -> dict[str, Any]:
+        async with self._uows() as uow:
+            await self._moderator(uow, actor)
+            page = await uow.repositories.comments.page(
+                status=CommentStatus(status) if status else None, limit=limit, cursor=cursor
+            )
+            result = {
+                "items": [await self._dto(uow, item) for item in page.items],
+                "next_cursor": page.next_cursor,
+            }
+            await self._moderator(uow, actor)
+            return result
+
+    async def decide(
+        self,
+        actor: ActorContext,
+        comment_id: UUID,
+        *,
+        decision: Literal["approve", "reject", "hide"],
+        reason: str,
+        expected_version: int,
+    ) -> CommentDTO:
+        self._text(reason)
+        async with self._uows() as uow:
+            await self._moderator(uow, actor)
+            record, facts = await self._locked(uow, actor, comment_id, Operation.MANAGE_MODERATION)
+            if record.deleted_at is not None:
+                raise NotFoundError("留言不存在")
+            if decision == "approve" and record.resource_id is not None:
+                require_allowed(actor, replace(facts, operation=Operation.READ_PUBLIC_RESOURCE))
+            before = record.status.value
+            assert actor.user_id is not None
+            record = await uow.repositories.comments.decide(
+                comment_id,
+                expected_version,
+                {
+                    "approve": CommentStatus.APPROVED,
+                    "reject": CommentStatus.REJECTED,
+                    "hide": CommentStatus.HIDDEN,
+                }[decision],
+                actor.user_id,
+            )
+            await self._audit(uow, actor, record, "moderate", before=before)
+            await self._moderator(uow, actor)
+            return await self._dto(uow, record)
+
+    @staticmethod
+    def _report_dto(report: Report) -> dict[str, Any]:
+        return {
+            "id": report.id,
+            "comment_id": report.comment_id,
+            "reason": report.reason,
+            "status": report.status.value,
+            "version": report.version,
+            "created_at": report.created_at,
+            "resolution": report.resolution_note,
+            "resolved_at": report.resolved_at,
+        }
+
+    async def report(self, actor: ActorContext, comment_id: UUID, *, reason: str) -> dict[str, Any]:
+        reason = self._text(reason).strip()
+        async with self._uows() as uow:
+            comment, _ = await self._locked(uow, actor, comment_id, Operation.REPORT_COMMENT)
+            assert actor.user_id is not None
+            creation = await uow.repositories.reports.create_or_get(
+                actor.user_id, comment_id, reason
+            )
+            if creation.created:
+                await self._audit(uow, actor, comment, "report")
+            await self._locked(uow, actor, comment_id, Operation.REPORT_COMMENT)
+            return self._report_dto(creation.record)
+
+    async def reports_page(
+        self,
+        actor: ActorContext,
+        *,
+        status: Literal["open", "resolved", "dismissed"],
+        limit: int,
+        cursor: str | None,
+    ) -> dict[str, Any]:
+        async with self._uows() as uow:
+            await self._moderator(uow, actor)
+            page = await uow.repositories.reports.page(
+                status=ReportStatus(status), limit=limit, cursor=cursor
+            )
+            result = {
+                "items": [self._report_dto(item) for item in page.items],
+                "next_cursor": page.next_cursor,
+            }
+            await self._moderator(uow, actor)
+            return result
+
+    async def resolve_report(
+        self,
+        actor: ActorContext,
+        report_id: UUID,
+        *,
+        resolution: str,
+        expected_version: int,
+        dismissed: bool = False,
+    ) -> dict[str, Any]:
+        resolution = self._text(resolution).strip()
+        async with self._uows() as uow:
+            await self._moderator(uow, actor)
+            probe = await uow.repositories.reports.get_or_raise(report_id)
+            comment, _ = await self._locked(
+                uow, actor, probe.comment_id, Operation.MANAGE_MODERATION
+            )
+            report = await uow.repositories.reports.get_for_update_or_raise(report_id)
+            if report.status is not ReportStatus.OPEN:
+                if (
+                    report.resolution_note == resolution
+                    and (report.status is ReportStatus.DISMISSED) == dismissed
+                ):
+                    return self._report_dto(report)
+                raise OptimisticLockError("举报已处理")
+            assert actor.user_id is not None
+            report = await uow.repositories.reports.resolve(
+                report_id, expected_version, actor.user_id, resolution, dismissed=dismissed
+            )
+            await self._audit(uow, actor, comment, "resolve_report")
+            await self._moderator(uow, actor)
+            return self._report_dto(report)
+
+    @staticmethod
+    async def _audit(
+        uow: UnitOfWork,
+        actor: ActorContext,
+        comment: Comment,
+        event: str,
+        *,
+        before: str | None = None,
+    ) -> None:
+        await uow.repositories.audit_events.record(
+            event_type=f"comment.{event}",
+            result=AuditResult.SUCCEEDED,
+            actor_id=actor.user_id,
+            resource_id=comment.resource_id,
+            metadata=AuditMetadata(
+                comment_id=comment.id,
+                before_status=before,
+                after_status=comment.status.value,
+                comment_version=comment.version,
+            ),
+        )
 
     async def create_comment(
         self,

@@ -9,10 +9,12 @@ import { Button, Notice } from "./ui";
 export function ActionPreview({
   action: initial,
   onDone,
+  onAccepted,
   onCancel,
 }: {
   action: Action;
   onDone?: () => void;
+  onAccepted?: () => void;
   onCancel?: () => void;
 }) {
   const [action, setAction] = useState(initial),
@@ -25,8 +27,9 @@ export function ActionPreview({
   const progress = useQuery({
     queryKey: ["action", session.user?.id, "owner", action.id],
     queryFn: () => api<Action>(`/actions/${action.id}`),
-    enabled: action.status === "running",
-    refetchInterval: (q) => (q.state.data?.status === "running" ? 1500 : false),
+    enabled: ["ready", "running"].includes(action.status),
+    refetchInterval: (q) =>
+      ["ready", "running"].includes(q.state.data?.status || "") ? 1500 : false,
   });
   useEffect(() => {
     if (progress.data) {
@@ -46,8 +49,10 @@ export function ActionPreview({
     try {
       const next = await request<Action>(`/actions/${action.id}/execute`, {
         parameters_hash: action.parameters_hash,
+        expected_action_version: action.version,
       });
       setAction(next);
+      if (["ready", "running"].includes(next.status)) onAccepted?.();
       if (next.status === "succeeded") {
         completed.current = next.id;
         onDone?.();
@@ -75,7 +80,7 @@ export function ActionPreview({
       <div className="inset">
         <p className="small muted">
           目标版本 {action.expected_version}
-          {action.expected_acl_version !== undefined &&
+          {action.expected_acl_version != null &&
             ` · 权限版本 ${action.expected_acl_version}`}
         </p>
         <dl className="change-list">
@@ -154,9 +159,13 @@ export function ActionPreview({
             </Button>
           )}
         </>
-      ) : action.status === "running" ? (
+      ) : ["ready", "running"].includes(action.status) ? (
         <div className="row">
-          <Notice>操作执行中，请等待后端确认。</Notice>
+          <Notice>
+            {action.status === "ready"
+              ? "操作已确认并排队，等待执行。"
+              : "操作执行中，请等待后端确认。"}
+          </Notice>
           <Button onClick={poll}>查看结果</Button>
         </div>
       ) : (
@@ -184,7 +193,9 @@ export function ActionPreview({
               disabled={busy}
               onClick={async () => {
                 try {
-                  await mutate(`/actions/${action.id}/cancel`);
+                  await mutate(`/actions/${action.id}/cancel`, {
+                    expected_action_version: action.version,
+                  });
                   onCancel?.();
                 } catch (e) {
                   setError((e as Error).message);

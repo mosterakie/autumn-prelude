@@ -320,6 +320,16 @@ export function Chat({
             handle("done", { status: r.status });
             return;
           }
+          if (
+            r &&
+            ["waiting_input", "waiting_auth", "waiting_approval"].includes(
+              r.status,
+            )
+          ) {
+            setConnection("");
+            setWorking(false);
+            return;
+          }
         } catch (e) {
           setError((e as Error).message);
         }
@@ -628,6 +638,11 @@ export function Chat({
             <ActionPreview
               key={action.id}
               action={action}
+              onAccepted={() => {
+                setStatus("queued");
+                setStreamEpoch((n) => n + 1);
+              }}
+              onCancel={() => setStreamEpoch((n) => n + 1)}
               onDone={() => {
                 session.toast("操作已执行，可继续对话。");
                 setRun((r) =>

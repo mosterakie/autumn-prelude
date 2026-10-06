@@ -131,18 +131,83 @@ class ActionDTO:
     parameters: dict[str, Any]
     expires_at: datetime
     run_id: UUID | None
+    target: dict[str, Any]
+    target_id: UUID | str | None
+    expected_version: int | None
+    expected_acl_version: int | None
+    summary: str
+    changes: dict[str, Any]
+    impact: str
+    requires_confirmation: bool
+    can_undo: bool
+    result: dict[str, Any] | None
 
 
 def action_dto(action: Action) -> ActionDTO:
+    parameters = json.loads(json.dumps(action.parameters))
+    command = parameters.get("command", parameters)
+    if not isinstance(command, dict):
+        command = {}
+    target_id = action.target_resource_id or command.get("target_id")
+    summary, impact = {
+        ActionType.PUBLISH: (
+            "发布所选原稿字段",
+            "所选字段将对访客公开；问答引用和原文件下载以本次选择为准。",
+        ),
+        ActionType.REVOKE: (
+            "撤回公开内容",
+            "立即阻止后续公开读取与问答引用；已经发送的内容无法收回。",
+        ),
+        ActionType.DELETE: ("删除资料", "撤回公开范围并安排派生资料清理，原稿按保存策略保留。"),
+        ActionType.CREATE_RESOURCE: ("创建私人资料", "保存新原稿，公开范围须单独设置。"),
+        ActionType.UPDATE_RESOURCE: ("修改私人原稿", "追加原稿版本，当前公开投影保持原有内容。"),
+        ActionType.UPDATE_SETTINGS: ("调整问答限额", "按所选角色与生效范围调整账号问答限制。"),
+        ActionType.CREATE_MEMORY: ("保存助手记忆", "仅本人经验证后可使用这条记忆。"),
+        ActionType.UPDATE_MEMORY: ("修改助手记忆", "更新本人确认的记忆内容。"),
+        ActionType.DELETE_MEMORY: ("删除助手记忆", "停止使用该记忆并安排派生状态清理。"),
+    }.get(action.type, ("处理已确认操作", "按预览中固定的参数执行。"))
+    result = (
+        {
+            key: value
+            for key, value in (action.result or {}).items()
+            if key
+            in {
+                "resource_id",
+                "publication_id",
+                "memory_id",
+                "resource_version",
+                "acl_version",
+                "changed",
+                "settings_key",
+                "settings_version",
+            }
+        }
+        if action.result is not None
+        else None
+    )
     return ActionDTO(
         action.id,
         action.type,
         action.status,
         action.version,
         action.parameters_hash,
-        json.loads(json.dumps(action.parameters)),
+        parameters,
         action.expires_at,
         action.run_id,
+        {"kind": command.get("target_type", "resource"), "id": target_id},
+        target_id,
+        action.expected_version,
+        action.expected_acl_version,
+        summary,
+        {
+            key: value
+            for key, value in command.items()
+            if key not in {"schema_version", "target_type", "kind", "target_id"}
+        },
+        impact,
+        action.requires_confirmation,
+        False,
+        result,
     )
 
 
@@ -266,8 +331,11 @@ class ActionService:
             actor_id=actor.user_id,
             action_id=action.id,
             resource_id=action.target_resource_id,
-            after_version=action.version,
-            metadata=AuditMetadata(after_status=action.status.value, run_id=action.run_id),
+            metadata=AuditMetadata(
+                after_status=action.status.value,
+                run_id=action.run_id,
+                action_version=action.version,
+            ),
         )
 
     async def preview(
@@ -361,10 +429,14 @@ class ActionService:
             raise NotFoundError("动作不存在")
         resource_ids = {probe.target_resource_id} if probe.target_resource_id is not None else set()
         if probe.run_id is not None:
-            await run_facts(uow, actor, probe.run_id, Operation.READ_RUN, require_context=False)
+            _, _, run = await run_facts(
+                uow, actor, probe.run_id, Operation.READ_RUN, require_context=False
+            )
             resource_ids.update(
                 source.resource_id
-                for source in await uow.repositories.knowledge.sources(probe.run_id)
+                for source in await uow.repositories.knowledge.sources(
+                    probe.run_id, context_generation=run.execution_generation
+                )
                 if source.resource_id is not None
             )
         for resource_id in sorted(resource_ids):
@@ -403,6 +475,10 @@ class ActionService:
             action = await self._action(uow, actor, action_id, Operation.EXECUTE_ACTION)
             if parameters_hash != action.parameters_hash:
                 raise OptimisticLockError("确认摘要与预览不一致")
+            if action.status in (ActionStatus.SUCCEEDED, ActionStatus.RUNNING):
+                return action_dto(action)
+            if action.status not in (ActionStatus.AWAITING_CONFIRMATION, ActionStatus.READY):
+                raise ConflictError("动作当前不能确认")
             now = await uow.repositories.users.database_time()
             if action.expires_at <= now and action.status in (
                 ActionStatus.AWAITING_CONFIRMATION,

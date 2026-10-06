@@ -1,8 +1,8 @@
-# E3 留言提交服务契约
+# 留言服务契约（E3 提交 / F8 HTTP 与审核）
 
 `CommentService.create_comment(actor, CreateCommentCommand)` 对接 B8 的 `create_or_get`，
 把当前权限、提交身份、一级回复和审计放进同一短事务。成功返回不可变 `CommentDTO`，
-退出 UoW 提交成功后才交还调用者。本节点没有 HTTP 路由或公开列表端点。
+退出 UoW 提交成功后才交还调用者。E3 的提交契约如下；F8 已接入公开列表、编辑/删除、举报与审核 HTTP，具体范围见文末。
 
 ## 输入与结果
 
@@ -67,7 +67,7 @@ comment_id 是 AuditMetadata 新增的可选身份字段，不需要修改数据
 
 公开列表仍须过滤 approved、未删除，以及关联文章当前公开；公开 DTO 不含邮箱。
 正文编辑需 expected_version，已审核内容须重新进入 pending。删除、举报、审核管理及其 HTTP
-入口依照 F 后续节点接入，不把本节点的提交结果当成公开列表或审核实现。
+入口由 F8 接入；本人提交结果与公开列表的可见性仍分别判断。
 
 ## 基础验收状态（2026-10-06）
 
@@ -76,3 +76,11 @@ comment_id 是 AuditMetadata 新增的可选身份字段，不需要修改数据
 - Ruff、修改文件格式、64 源文件 mypy strict 与 git diff --check 通过；没有增加 schema 迁移或依赖。
 - 使用 PostgreSQL 5442 的独立测试库；数据在外层事务回滚，没有修改业务库。
 - 本节点本地提交，不推送；HTTP、公开列表、编辑/删除/举报与审核管理仍按 F 后续节点实现。
+
+## F8 接入（2026-10-06）
+
+上述 E3 验收为历史节点记录。F8 已交付 public/comments、comments、reports 和 moderation 路由，说明见 [F_STAGE_API.md](F_STAGE_API.md)。公开留言只含当前已审核且未删除的内容；关联文章及父留言的可见性每次重查。作者编辑重新进入 pending，父留言不可见时回复也不公开。本人或已升级站长可软删除，修改/删除/审核均使用 expected_version。
+
+普通用户不得访问审核/举报管理页。新举报要求邮箱已验证及留言当前公开可见；同账号/留言已有同理由 open 举报返回同记录，不同理由 409。站长处理使用版本 CAS；默认永久保存举报与处理结果。所有认证写请求统一验 Origin/CSRF。
+
+新增脱敏审计 metadata.comment_version；before/after_version 继续专指资源版本。审核 reason 只做请求校验，审计记录受控状态而不复制自由文本。服务不调用 AI、邮件或对象存储。F8 基础流程与受影响 E3 流程均通过。

@@ -17,6 +17,8 @@ class AuditMetadata:
     before_acl_version: int | None = None
     after_acl_version: int | None = None
     scope_epoch: int | None = None
+    comment_version: int | None = None
+    action_version: int | None = None
     changed_fields: tuple[str, ...] = ()
     before_status: str | None = None
     after_status: str | None = None
@@ -29,7 +31,13 @@ class AuditMetadata:
 
     def to_dict(self) -> dict[str, Any]:
         values: dict[str, Any] = {}
-        for name in ("before_acl_version", "after_acl_version", "scope_epoch"):
+        for name in (
+            "before_acl_version",
+            "after_acl_version",
+            "scope_epoch",
+            "comment_version",
+            "action_version",
+        ):
             value = getattr(self, name)
             if value is not None:
                 if type(value) is not int or value < 0:

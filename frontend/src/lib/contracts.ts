@@ -47,7 +47,7 @@ export interface Comment {
   parent_id: string | null;
   author_display_name: string;
   body: string;
-  status: "pending" | "approved" | "rejected";
+  status: "pending" | "approved" | "rejected" | "hidden";
   created_at: string;
   version: number;
 }
@@ -146,10 +146,11 @@ export interface Job {
 }
 export interface Action {
   id: string;
+  version: number;
   type: string;
-  target_id?: string;
-  expected_version: number;
-  expected_acl_version?: number;
+  target_id?: string | null;
+  expected_version: number | null;
+  expected_acl_version?: number | null;
   parameters_hash: string;
   summary: string;
   changes: Record<string, unknown>;

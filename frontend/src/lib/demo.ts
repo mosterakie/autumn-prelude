@@ -142,6 +142,7 @@ function makeAction(
 ): Action {
   const action: Action = {
     id: id(),
+    version: 0,
     type,
     target_id: target?.id,
     expected_version: target?.version ?? retention.version,
