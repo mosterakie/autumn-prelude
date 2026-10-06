@@ -179,3 +179,10 @@ E8 已提供正式结果与 lease/代际/权限同事务的提交闸门；H 仍�
 - 审计 metadata 保存留言/动作版本，资源 before/after_version 不挪作其他对象版本。无新增表或迁移。
 - F8 的 4 项真实数据库/HTTP 基础流程通过；对受影响的留言/动作/公开读取/SSE 进行一次集中复核，共 18 通过、0 跳过。Ruff、99 源文件 mypy strict、前端类型检查、Alembic check 与 diff 检查通过。
 - F1–F8 完成，未运行全量回归或扩展并发矩阵；5442 独立测试库，业务库无写入。每节点本地提交，未推送、未部署、未调用真实邮件/模型服务。
+
+## G1 LangGraph 骨架（2026-10-06）
+
+- 最小图包含当前授权、获准上下文、规划、工具、持久等待和回复节点；每次工具循环返回授权/上下文入口。图状态仅含 Run ID、代际、步数和路由，不含 ActorContext、正文或工具参数。
+- 启用 agent extra：LangGraph 1.2 系列，本地使用内置 runtime 的 1.2.12 与依赖验证，未联网安装。CI 安装 dev,agent；Postgres saver 初始化留在 H，不伪称已经建立框架持久表。
+- 1 项真实图运行基础用例通过，验证工具后重新鉴权和等待分支退出；Ruff、100 文件 mypy strict 与 diff 检查通过。业务服务节点、预算与身份装配随 G2–G7 接入。
+- 图 API 与可选 checkpoint 接口按 [LangGraph Graph API](https://docs.langchain.com/oss/python/langgraph/graph-api) 和 [持久化说明](https://docs.langchain.com/oss/python/langgraph/persistence) 校对。节点本地提交，未推送。

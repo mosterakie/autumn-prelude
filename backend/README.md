@@ -150,7 +150,7 @@ backend/
 ```powershell
 cd backend
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m pip install -e ".[dev,agent]"
 Copy-Item .env.example .env   # 按本机情况填写
 .\.venv\Scripts\python.exe scripts\bootstrap_db.py   # 建应用库 + vector 扩展
 ```
