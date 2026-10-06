@@ -1507,16 +1507,20 @@ input[type="radio"] {
   align-items: center;
   gap: 9px;
   color: var(--muted);
-  height: 37px;
+  min-height: 112px;
+  min-width: 0;
 }
-.assistant-avatar svg {
-  width: 30px;
-  height: 33px;
+.assistant-avatar .assistant-sprite {
+  width: 96px;
+  height: 112px;
+  flex-shrink: 0;
+  object-fit: contain;
+  image-rendering: pixelated;
 }
 .assistant-avatar .small {
   font-size: 11px;
 }
-.assistant-avatar.thinking svg {
+.assistant-avatar.thinking .assistant-sprite {
   animation: bob 1.8s ease-in-out infinite;
 }
 @keyframes bob {
@@ -2592,6 +2596,11 @@ input[type="radio"] {
   }
   .assistant-avatar {
     gap: 6px;
+    min-height: 84px;
+  }
+  .assistant-avatar .assistant-sprite {
+    width: 72px;
+    height: 84px;
   }
   .assistant-avatar .small {
     font-size: 10px;
