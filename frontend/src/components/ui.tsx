@@ -70,7 +70,13 @@ export function Modal({
   children: ReactNode;
   onClose: () => void;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
+  const ref = useRef<HTMLDivElement>(null),
+    close = useRef(onClose);
+  useEffect(() => {
+    close.current = onClose;
+  }, [onClose]);
+  // Inline onClose callbacks change during typing and session clock updates.
+  // Focus and scroll locking belong to the dialog's mount/unmount lifecycle.
   useEffect(() => {
     const previous = document.activeElement as HTMLElement;
     const old = document.body.style.overflow;
@@ -79,12 +85,15 @@ export function Modal({
     const nodes = () =>
       Array.from(
         root?.querySelectorAll<HTMLElement>(
-          'button:not(:disabled), a[href], input, textarea, select, [tabindex="0"]',
+          'button:not(:disabled), a[href], input:not(:disabled):not([type="hidden"]), textarea:not(:disabled), select:not(:disabled), [tabindex="0"]',
         ) || [],
       );
-    nodes()[0]?.focus();
+    const initial = root?.querySelector<HTMLElement>(
+      'input:not(:disabled):not([type="hidden"]), textarea:not(:disabled), select:not(:disabled)',
+    );
+    (initial || nodes()[0])?.focus();
     const handler = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") close.current();
       if (event.key === "Tab") {
         const all = nodes(),
           first = all[0],
@@ -104,7 +113,7 @@ export function Modal({
       document.removeEventListener("keydown", handler);
       previous?.focus();
     };
-  }, [onClose]);
+  }, []);
   return (
     <div
       className="modal-backdrop"
