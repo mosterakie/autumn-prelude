@@ -35,7 +35,12 @@ from autumn_backend.repositories.audit import AuditMetadata
 from autumn_backend.repositories.jobs import JobSpec
 from autumn_backend.services.access import lock_authentication, publication_facts, require_allowed
 from autumn_backend.services.ai_limits import read_ai_limits
-from autumn_backend.services.context import advance_context_generation, run_facts
+from autumn_backend.services.context import (
+    TaskFence,
+    advance_context_generation,
+    require_task,
+    run_facts,
+)
 from autumn_backend.services.quota import QuotaService
 
 
@@ -346,6 +351,7 @@ class ActionService:
         idempotency_key: str,
         run_id: UUID | None = None,
         authorization_message_id: UUID | None = None,
+        fence: TaskFence | None = None,
     ) -> ActionDTO:
         if (
             not idempotency_key.strip()
@@ -375,12 +381,17 @@ class ActionService:
                 )
                 if authorization_message_id is None:
                     raise InvalidInputError("Agent 提议必须绑定用户授权消息")
+                if fence is not None:
+                    await require_task(uow, actor, run, fence)
+            elif fence is not None:
+                raise InvalidInputError("任务动作必须绑定 Run")
             if authorization_message_id is not None:
                 message = await uow.session.get(Message, authorization_message_id)
                 if (
                     run is None
                     or message is None
                     or message.conversation_id != run.conversation_id
+                    or (fence is not None and message.run_id != run.id)
                     or message.role is not MessageRole.USER
                 ):
                     raise NotFoundError("授权消息不存在")
@@ -418,6 +429,21 @@ class ActionService:
                         run.id, RunEventType.RUN_STATUS, {"status": run.status.value}
                     )
                 await self._audit(uow, actor, creation.record, "proposed")
+            if fence is not None:
+                assert run is not None
+                # 预览进入持久等待与当前 job 结算原子提交；迟到 worker 不能留下动作。
+                await self._target(uow, actor, command)
+                await run_facts(uow, actor, run.id, Operation.CONTINUE_RUN)
+                await uow.repositories.jobs.finish(
+                    fence.job_id,
+                    fence.token,
+                    result={
+                        "run_id": str(run.id),
+                        "action_id": str(creation.record.id),
+                        "status": run.status.value,
+                        "execution_generation": run.execution_generation,
+                    },
+                )
             return action_dto(creation.record)
 
     async def _action(

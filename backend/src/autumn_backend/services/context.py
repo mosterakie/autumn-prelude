@@ -1,6 +1,6 @@
 """持久来源的当前权限装配；不把历史、摘要或记忆视作天然可信文本。"""
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from uuid import UUID
 
 from sqlalchemy import select
@@ -25,6 +25,33 @@ from autumn_backend.policies.facts import (
     WebSourceFacts,
 )
 from autumn_backend.services.access import lock_authentication, require_allowed
+
+
+@dataclass(frozen=True, slots=True)
+class TaskFence:
+    job_id: UUID
+    token: UUID
+    generation: int
+
+
+async def require_task(uow: UnitOfWork, actor: ActorContext, run: Run, fence: TaskFence) -> None:
+    """业务服务已按 user/session/run/resource 顺序加锁，再在同一事务校验任务资格。"""
+    job = await uow.repositories.jobs.require_lease(fence.job_id, fence.token)
+    payload = job.payload or {}
+    if (
+        job.kind not in ("run.dispatch", "run.resume")
+        or job.run_id != run.id
+        or job.actor_id != actor.user_id
+        or job.auth_session_id != actor.auth_session_id
+        or run.auth_session_id != actor.auth_session_id
+    ):
+        raise NotFoundError("运行任务不存在")
+    if (
+        fence.generation != run.execution_generation
+        or type(payload.get("execution_generation")) is not int
+        or payload["execution_generation"] != run.execution_generation
+    ):
+        raise OptimisticLockError("任务代际已失效")
 
 
 async def source_fact(

@@ -46,7 +46,7 @@ from autumn_backend.repositories.jobs import JobSpec
 from autumn_backend.repositories.knowledge import Hit
 from autumn_backend.repositories.resources import RevisionDraft
 from autumn_backend.services.access import lock_authentication, publication_facts, require_allowed
-from autumn_backend.services.context import run_facts, source_fact
+from autumn_backend.services.context import TaskFence, require_task, run_facts, source_fact
 from autumn_backend.services.storage import StorageService
 
 
@@ -482,18 +482,28 @@ class KnowledgeService:
         return run, tuple(index.id for index in indexes if index.resource_id in locked_resource_ids)
 
     async def retrieve(
-        self, actor: ActorContext, run_id: UUID, query: str, *, limit: int = 5
+        self,
+        actor: ActorContext,
+        run_id: UUID,
+        query: str,
+        *,
+        limit: int = 5,
+        fence: TaskFence | None = None,
     ) -> tuple[Citation, ...]:
         if not query.strip() or len(query) > 8000 or not 1 <= limit <= 20:
             raise InvalidInputError("检索输入无效")
         async with self._uows() as uow:
             run, _ = await self._search_scope(uow, actor, run_id)
+            if fence is not None:
+                await require_task(uow, actor, run, fence)
             version = run.version
         require_outside_uow()
         vectors = await self.embedder.embed((query,))
         validate_vectors(vectors, 1)
         async with self._uows() as uow:
             run, allowed = await self._search_scope(uow, actor, run_id)
+            if fence is not None:
+                await require_task(uow, actor, run, fence)
             if run.version != version:
                 raise OptimisticLockError("旧检索执行已失效")
             hits = await uow.repositories.knowledge.nearest(
@@ -508,6 +518,8 @@ class KnowledgeService:
             hits = tuple(by_id[item] for item in order[:limit])
         async with self._uows() as uow:
             run, allowed = await self._search_scope(uow, actor, run_id)
+            if fence is not None:
+                await require_task(uow, actor, run, fence)
             if run.version != version or any(hit.index_id not in allowed for hit in hits):
                 raise OptimisticLockError("检索结果已失效")
             for hit in hits:
@@ -529,6 +541,9 @@ class KnowledgeService:
                         hit.locator,
                     )
                 )
+            if fence is not None:
+                await run_facts(uow, actor, run_id, Operation.CONTINUE_RUN)
+                await require_task(uow, actor, run, fence)
             return tuple(result)
 
     async def capture_dependencies(
