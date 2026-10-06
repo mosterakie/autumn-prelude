@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from autumn_backend.db.enums import ConversationMode
 from autumn_backend.db.models import Conversation
@@ -29,13 +29,26 @@ class ConversationRepository(VersionedRepository[Conversation]):
         ).scalar_one_or_none()
 
     async def for_user(
-        self, user_id: UUID, *, limit: int = 20, cursor: str | None = None
+        self,
+        user_id: UUID,
+        *,
+        limit: int = 20,
+        cursor: str | None = None,
+        mode: ConversationMode | None = None,
     ) -> Page[Conversation]:
         return await fetch_page(
             self.session,
             Conversation,
             select(Conversation).where(
-                Conversation.user_id == user_id, Conversation.deleted_at.is_(None)
+                Conversation.user_id == user_id,
+                Conversation.deleted_at.is_(None),
+                or_(
+                    Conversation.expires_at.is_(None),
+                    Conversation.expires_at > func.clock_timestamp(),
+                ),
+                Conversation.mode == mode
+                if mode is not None
+                else Conversation.mode.in_(tuple(ConversationMode)),
             ),
             limit=limit,
             cursor=cursor,
