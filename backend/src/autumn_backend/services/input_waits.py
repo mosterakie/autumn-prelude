@@ -13,6 +13,7 @@ from autumn_backend.errors import (
     ConcurrencyLimitError,
     ConflictError,
     IdempotencyConflictError,
+    InputChoiceRequiredError,
     InvalidInputError,
 )
 from autumn_backend.jobs.queue import enqueue
@@ -146,7 +147,7 @@ class InputWaitService:
             if run.status is not RunStatus.WAITING_INPUT or request.expires_at <= facts.now:
                 raise ConflictError("等待项已过期或不再等待答案")
             if request.options and body not in request.options:
-                raise InvalidInputError("答案必须来自当前选项")
+                raise InputChoiceRequiredError("答案必须来自当前选项")
             limits = read_ai_limits(await uow.repositories.settings.get("ai_limits")).for_role(
                 actor.role
             )

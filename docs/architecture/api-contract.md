@@ -40,6 +40,7 @@
 | 413 | INPUT_TOO_LARGE、FILE_TOO_LARGE | 提示长度或大小限制 |
 | 415 | UNSUPPORTED_FILE_TYPE | 提示仅 PDF 与 DOCX |
 | 422 | VALIDATION_ERROR、OCR_REQUIRED、INVALID_URL | 字段级错误或资料提示 |
+| 422 | INPUT_CHOICE_REQUIRED | 保留等待状态与已选值，提示从当前选项中选择 |
 | 429 | AI_COOLDOWN、QUOTA_EXCEEDED、RATE_LIMITED、CONCURRENCY_LIMIT | 展示截止时间或稍后重试 |
 | 502 或 503 | PROVIDER_UNAVAILABLE、SERVICE_UNAVAILABLE | 保留输入，按明确提示重试 |
 
@@ -136,6 +137,10 @@ MessageDTO 为 id、role、body、content_version、status、created_at、citati
 ResumeRequest 为 input_request_id 和 answer，可在 waiting_input 时提交补充信息；waiting_auth 时允许仅提交 resume=true。服务端校验等待项仍有效与升级会话有效，不允许任意指定要跳转的图节点。审批类恢复通过 actions/execute 触发，不接受客户端随意设置 approved=true。
 
 input_request 对外仅含 id、prompt、options 和 expires_at。等待项的同答案重复提交返回原结果，不同答案或已替换的等待项返回 409；恢复时仍需取得执行并发槽，未取得返回 429，保留待处理状态。
+
+options 非空时前端展示单选项，answer 必须原样提交其中一个完整选项；不允许用自由输入的“确认”或“继续”代替。选项不匹配返回 422 INPUT_CHOICE_REQUIRED，固定提示“请从列出的选项中选择并提交”，不消费等待项、追加消息或安排任务。options 为空时展示文字输入。前端禁用过期或正在提交的请求，允许停止本次 Run；服务端仍是有效期、权限与消费状态的最终判断者。
+
+补充答案仅恢复同一 Run，不确认或执行写入动作。收藏、保存和公开必须生成真实 ActionDTO，并经操作预览的确认执行流程；不能把等待输入当作动作确认。
 
 ## 5 SSE 契约
 

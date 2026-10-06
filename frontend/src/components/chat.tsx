@@ -43,6 +43,7 @@ import { useSession } from "./providers";
 import { OwnerContentLinks } from "./shell";
 import { AssistantAvatar } from "./avatar";
 import { ActionPreview } from "./actions";
+import { InputRequestForm } from "./input-request";
 import { Button, Empty, Markdown, Modal, Notice } from "./ui";
 export function Chat({
   conversationId,
@@ -93,7 +94,6 @@ export function Chat({
     [searchMode, setSearchMode] = useState<Ask["search_mode"]>(
       owner ? "auto" : "site",
     ),
-    [inputAnswer, setInputAnswer] = useState(""),
     [streamEpoch, setStreamEpoch] = useState(0),
     [olderCursor, setOlderCursor] = useState<string | null | undefined>(),
     [moreConversations, setMoreConversations] = useState<Conversation[]>([]),
@@ -662,35 +662,35 @@ export function Chat({
             />
           ))}
           {status === "waiting_input" && run?.input_request && (
-            <form
-              className="inset form-stack"
-              onSubmit={async (e) => {
-                e.preventDefault();
-                try {
-                  const r = normalizeRun(
-                    await mutate<Run>(`/runs/${run.run_id}/resume`, {
-                      input_request_id: run.input_request!.id,
-                      answer: inputAnswer,
-                    }),
-                  );
-                  setStatus(r.status);
-                  setRunId(r.run_id);
-                  setStreamEpoch((n) => n + 1);
-                } catch (e) {
-                  setError((e as Error).message);
-                }
+            <InputRequestForm
+              key={`${run.run_id}:${run.input_request.id}`}
+              request={run.input_request}
+              now={session.serverNow()}
+              onSubmit={async (answer) => {
+                const r = normalizeRun(
+                  await mutate<Run>(`/runs/${run.run_id}/resume`, {
+                    input_request_id: run.input_request!.id,
+                    answer,
+                  }),
+                );
+                setError("");
+                setRun(r);
+                setStatus(r.status);
+                setRunId(r.run_id);
+                setStreamEpoch((n) => n + 1);
+                invalidate();
               }}
-            >
-              <label>
-                {run.input_request.prompt}
-                <input
-                  required
-                  value={inputAnswer}
-                  onChange={(e) => setInputAnswer(e.target.value)}
-                />
-              </label>
-              <Button>补充并继续</Button>
-            </form>
+              onCancel={async () => {
+                const next = normalizeRun(
+                  await mutate<Run>(`/runs/${run.run_id}/cancel`),
+                );
+                setRun(next);
+                setStatus(next.status);
+                setStreamEpoch((n) => n + 1);
+                setError("");
+                invalidate();
+              }}
+            />
           )}
           {status === "waiting_auth" && run && owner && session.ownerReady && (
             <div className="notice">

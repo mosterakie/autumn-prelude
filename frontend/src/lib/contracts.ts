@@ -100,7 +100,13 @@ export interface Run {
   status: RunStatus;
   message?: Message;
   pending_actions?: Action[];
-  input_request?: { id: string; prompt: string } | null;
+  input_request?: InputRequest | null;
+}
+export interface InputRequest {
+  id: string;
+  prompt: string;
+  options: string[];
+  expires_at?: string;
 }
 export interface AcceptedRun {
   run_id: string;

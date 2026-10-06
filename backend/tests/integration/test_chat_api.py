@@ -9,8 +9,9 @@ from autumn_backend.app import create_app
 from autumn_backend.auth.service import AuthService
 from autumn_backend.config import Environment, Settings
 from autumn_backend.db.enums import RunSourceType, RunStatus
-from autumn_backend.db.models import Job
+from autumn_backend.db.models import Job, Message
 from autumn_backend.services.chats import ChatService
+from autumn_backend.services.input_waits import InputWaitService, load_input
 from autumn_backend.services.quota import QuotaService
 from autumn_backend.services.runs import RunService
 from tests.integration.service_cases import ServiceCase
@@ -185,3 +186,84 @@ async def test_waiting_auth_resume_rebinds_rotated_session_without_new_quota(
                     .where(Job.run_id == run_id, Job.kind == "run.resume")
                 )
             ).scalar_one() == 1
+
+
+async def test_input_options_http_rejects_free_text_then_resumes_exact_choice_once(
+    e_case: ServiceCase,
+) -> None:
+    run_id, _ = await prepared_run(e_case)
+    options = ("确认保存这条私人收藏", "算了，不保存")
+    wait = await InputWaitService(e_case.uows).request(
+        e_case.member, run_id, wait_id=uuid4(), prompt="请选择下一步", options=options
+    )
+    app, member, _ = await chat_app(e_case)
+    before_quota = await QuotaService(e_case.uows).current(member.session.actor)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        client.cookies.set("autumn_session", member.token)
+        before = (await client.get(f"/api/runs/{run_id}")).json()["data"]
+        assert before["input_request"]["options"] == list(options)
+        assert before["input_request"]["expires_at"]
+        body = {"input_request_id": str(wait.id), "answer": "确认"}
+        rejected = await client.post(
+            f"/api/runs/{run_id}/resume", json=body, headers=headers(member)
+        )
+        assert rejected.status_code == 422
+        assert rejected.json()["error"] == {
+            "code": "INPUT_CHOICE_REQUIRED",
+            "message": "请从列出的选项中选择并提交",
+            "details": {},
+        }
+        async with e_case.uows() as uow:
+            run = await uow.repositories.runs.get_or_raise(run_id)
+            assert run.status is RunStatus.WAITING_INPUT
+            assert run.execution_generation == before["execution_generation"]
+            assert load_input(run.input_request).consumed_at is None
+            assert (
+                await uow.session.scalar(
+                    select(func.count())
+                    .select_from(Message)
+                    .where(Message.client_message_id == wait.id)
+                )
+                == 0
+            )
+            assert (
+                await uow.session.scalar(
+                    select(func.count()).select_from(Job).where(Job.run_id == run_id)
+                )
+                == 0
+            )
+        body["answer"] = options[0]
+        accepted = await client.post(
+            f"/api/runs/{run_id}/resume", json=body, headers=headers(member)
+        )
+        assert accepted.status_code == 202
+        result = accepted.json()["data"]
+        assert result["status"] == "queued" and result["input_request"] is None
+        assert result["execution_generation"] == before["execution_generation"] + 1
+        repeated = await client.post(
+            f"/api/runs/{run_id}/resume", json=body, headers=headers(member)
+        )
+        assert repeated.status_code == 202
+        assert repeated.json()["data"]["execution_generation"] == result["execution_generation"]
+        after_quota = await QuotaService(e_case.uows).current(member.session.actor)
+        assert (after_quota.used, after_quota.reserved) == (
+            before_quota.used,
+            before_quota.reserved,
+        )
+        async with e_case.uows() as uow:
+            assert (
+                await uow.session.scalar(
+                    select(func.count())
+                    .select_from(Message)
+                    .where(Message.client_message_id == wait.id)
+                )
+                == 1
+            )
+            assert (
+                await uow.session.scalar(
+                    select(func.count())
+                    .select_from(Job)
+                    .where(Job.run_id == run_id, Job.kind == "run.resume")
+                )
+                == 1
+            )

@@ -14,6 +14,7 @@ from autumn_backend.services.access import AuthorizationError
 _STATUS = {
     "NOT_FOUND": 404,
     "INVALID_INPUT": 422,
+    "INPUT_CHOICE_REQUIRED": 422,
     "CONFLICT": 409,
     "CONVERSATION_BUSY": 409,
     "VERSION_CONFLICT": 409,
@@ -39,6 +40,9 @@ _MESSAGES = {
     429: "请求超过当前限制，请稍后重试",
     503: "服务暂时不可用",
 }
+_CODE_MESSAGES = {
+    "INPUT_CHOICE_REQUIRED": "请从列出的选项中选择并提交",
+}
 
 
 def error_response(
@@ -51,7 +55,7 @@ def error_response(
 ) -> JSONResponse:
     error: dict[str, Any] = {
         "code": code,
-        "message": _MESSAGES.get(status, "请求处理失败"),
+        "message": _CODE_MESSAGES.get(code, _MESSAGES.get(status, "请求处理失败")),
         "details": details or {},
     }
     headers = {}

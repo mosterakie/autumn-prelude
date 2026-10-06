@@ -11,6 +11,10 @@ class InvalidInputError(DomainError):
     code = "invalid_input"
 
 
+class InputChoiceRequiredError(InvalidInputError):
+    code = "input_choice_required"
+
+
 class NotFoundError(DomainError):
     code = "not_found"
 
