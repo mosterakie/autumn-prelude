@@ -283,6 +283,7 @@ class KnowledgeService:
             if (
                 job.kind != "knowledge.publication_sync"
                 or job.actor_id != actor.user_id
+                or job.auth_session_id != actor.auth_session_id
                 or job.resource_id is None
                 or not isinstance(job.payload, dict)
             ):
@@ -318,6 +319,7 @@ class KnowledgeService:
         if (
             job.kind != "knowledge.ingest"
             or job.actor_id != actor.user_id
+            or job.auth_session_id != actor.auth_session_id
             or job.resource_id is None
             or not isinstance(job.payload, dict)
         ):

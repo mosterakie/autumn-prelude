@@ -12,6 +12,7 @@ from autumn_backend.db.session import UnitOfWorkFactory
 from autumn_backend.jobs.queue import LeasedJob
 from autumn_backend.services.actions import ActionService
 from autumn_backend.services.execution import ExecutionService
+from autumn_backend.services.index_cleanup import IndexCleanupService
 from autumn_backend.services.input_waits import InputWaitService
 from autumn_backend.services.knowledge import KnowledgeService
 from autumn_backend.services.runtime import RuntimeService
@@ -35,6 +36,20 @@ def storage_handlers(storage: StorageService, tasks: TaskService) -> dict[str, H
         await storage.run_delete(await tasks.actor(job), job.id, job.token)
 
     return {"storage.finalize": finalize, "storage.delete": delete}
+
+
+def knowledge_handlers(knowledge: KnowledgeService, tasks: TaskService) -> dict[str, Handler]:
+    async def index(job: LeasedJob) -> None:
+        await knowledge.build_index(await tasks.actor(job), job.id, job.token)
+
+    async def publication(job: LeasedJob) -> None:
+        await knowledge.sync_publication(await tasks.actor(job), job.id, job.token)
+
+    return {"knowledge.ingest": index, "knowledge.publication_sync": publication}
+
+
+def cleanup_handlers(uows: UnitOfWorkFactory) -> dict[str, Handler]:
+    return {"knowledge.cleanup": IndexCleanupService(uows).execute}
 
 
 def agent_runtime(

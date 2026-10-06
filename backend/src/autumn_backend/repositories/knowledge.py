@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select, true, update
 from sqlalchemy.dialects.postgresql import insert
 
 from autumn_backend.db.enums import IndexScope, IndexStatus, RunSourceType
@@ -34,6 +34,38 @@ class Hit:
 
 
 class KnowledgeRepository(RepositoryBase):
+    async def retire_invalid(self, resource_id: UUID) -> None:
+        """只撤下已经失效的派生索引，不删除永久保存的业务正文与来源。"""
+        resource = await self.session.get(Resource, resource_id)
+        if resource is None:
+            return
+        current = await self.session.scalar(
+            select(Publication.id).where(
+                Publication.resource_id == resource_id,
+                Publication.revoked_at.is_(None),
+                Publication.ai_enabled.is_(True),
+            )
+        )
+        invalid = (
+            true()
+            if not resource.is_active
+            else or_(
+                (KnowledgeIndex.scope == IndexScope.OWNER)
+                & (KnowledgeIndex.revision_id != resource.current_revision_id),
+                (KnowledgeIndex.scope == IndexScope.PUBLIC)
+                & (KnowledgeIndex.publication_id != current if current is not None else true()),
+            )
+        )
+        await self.session.execute(
+            update(KnowledgeIndex)
+            .where(
+                KnowledgeIndex.resource_id == resource_id,
+                KnowledgeIndex.is_active.is_(True),
+                invalid,
+            )
+            .values(is_active=False, version=KnowledgeIndex.version + 1)
+        )
+
     async def retire_public(self, resource_id: UUID) -> None:
         await self.session.execute(
             update(KnowledgeIndex)
