@@ -1,6 +1,7 @@
 """每次进入图从当前业务数据库装配文本，不能从框架 checkpoint 提取正文。"""
 
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 from autumn_backend.errors import ConflictError, LeaseLostError, NotFoundError, OptimisticLockError
@@ -13,6 +14,7 @@ from autumn_backend.services.runtime import RuntimeService, RuntimeTicket
 class Context:
     history: tuple[str, ...]
     sources: tuple[Citation, ...]
+    actions: tuple[dict[str, Any], ...] = ()
 
 
 class ContextLoader:
@@ -39,4 +41,4 @@ class ContextLoader:
         )
         sources = await self.knowledge.current_sources(ticket.actor, ticket.run_id, fence=fence)
         await self.runtime.guard(ticket)
-        return Context(history, sources)
+        return Context(history, sources, await self.runtime.completed_actions(ticket))

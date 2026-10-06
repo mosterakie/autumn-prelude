@@ -18,6 +18,7 @@ from autumn_backend.repositories.provider_calls import external_idempotency_key
 from autumn_backend.services.actions import ActionService, Command, stored_command
 from autumn_backend.services.context import advance_context_generation, run_facts
 from autumn_backend.services.quota import QuotaService
+from autumn_backend.services.runtime import spend_time_in_uow
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +134,12 @@ class ExecutionService:
             )
 
     async def commit_model_result(
-        self, actor: ActorContext, fence: ExecutionFence, result: ModelResult
+        self,
+        actor: ActorContext,
+        fence: ExecutionFence,
+        result: ModelResult,
+        *,
+        elapsed_ms: int | None = None,
     ) -> CommittedReply:
         async with self._uows() as uow:
             run = await self._run_job(uow, actor, fence.job_id, fence.lease_token, fence=fence)
@@ -144,6 +150,8 @@ class ExecutionService:
                 or call.status is not ProviderCallStatus.DISPATCHED
             ):
                 raise ConflictError("模型结果与派发记录不匹配")
+            if elapsed_ms is not None:
+                spend_time_in_uow(run, elapsed_ms)
             message = await uow.repositories.messages.append_assistant_complete(
                 conversation_id=run.conversation_id,
                 run_id=run.id,
@@ -186,6 +194,32 @@ class ExecutionService:
                 },
             )
             return CommittedReply(run.id, message.id, fence.generation)
+
+    async def commit_model_step(
+        self, actor: ActorContext, fence: ExecutionFence, result: ModelResult, *, elapsed_ms: int
+    ) -> None:
+        """已完成的规划调用只结算账本，不把工具协议写成正式回复或结束 Run。"""
+        async with self._uows() as uow:
+            run = await self._run_job(uow, actor, fence.job_id, fence.lease_token, fence=fence)
+            call = await uow.repositories.provider_calls.get_for_update_or_raise(fence.call_id)
+            if (
+                call.run_id != run.id
+                or call.job_id != fence.job_id
+                or call.status is not ProviderCallStatus.DISPATCHED
+            ):
+                raise ConflictError("规划结果与派发记录不匹配")
+            spend_time_in_uow(run, elapsed_ms)
+            await uow.repositories.provider_calls.settle_succeeded(
+                call.id,
+                external_request_id=result.external_request_id,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+            )
+            run.version += 1
+            await uow.session.flush()
+            await self._run_job(
+                uow, actor, fence.job_id, fence.lease_token, fence=fence, after_result=True
+            )
 
     async def call_model(
         self, actor: ActorContext, job_id: UUID, token: UUID, call_id: UUID, model: ModelCall

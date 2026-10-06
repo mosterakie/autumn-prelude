@@ -39,13 +39,18 @@ from autumn_backend.io_boundary import require_outside_uow
 from autumn_backend.jobs.queue import enqueue
 from autumn_backend.knowledge.text import TextPart, chunks, extract
 from autumn_backend.knowledge.web import SafeWebFetcher, WebPage, validate_url
-from autumn_backend.policies import ActorContext
+from autumn_backend.policies import ActorContext, Decision, DenialCode
 from autumn_backend.policies.context import source_decision
 from autumn_backend.policies.facts import ConversationMode, Operation, TargetKind
 from autumn_backend.repositories.jobs import JobSpec
 from autumn_backend.repositories.knowledge import Hit
 from autumn_backend.repositories.resources import RevisionDraft
-from autumn_backend.services.access import lock_authentication, publication_facts, require_allowed
+from autumn_backend.services.access import (
+    AuthorizationError,
+    lock_authentication,
+    publication_facts,
+    require_allowed,
+)
 from autumn_backend.services.context import TaskFence, require_task, run_facts, source_fact
 from autumn_backend.services.storage import StorageService
 
@@ -495,6 +500,7 @@ class KnowledgeService:
         async with self._uows() as uow:
             run, _ = await self._search_scope(uow, actor, run_id)
             if fence is not None:
+                await run_facts(uow, actor, run_id, Operation.CONTINUE_RUN)
                 await require_task(uow, actor, run, fence)
             version = run.version
         require_outside_uow()
@@ -503,6 +509,7 @@ class KnowledgeService:
         async with self._uows() as uow:
             run, allowed = await self._search_scope(uow, actor, run_id)
             if fence is not None:
+                await run_facts(uow, actor, run_id, Operation.CONTINUE_RUN)
                 await require_task(uow, actor, run, fence)
             if run.version != version:
                 raise OptimisticLockError("旧检索执行已失效")
@@ -563,8 +570,15 @@ class KnowledgeService:
             current_actor, facts, run = await run_facts(
                 uow, actor, run_id, Operation.READ_RUN, require_context=False
             )
-            if fence is not None:
-                await require_task(uow, actor, run, fence)
+            if fence is not None and run.scope_epoch != facts.current_scope_epoch:
+                job = await uow.repositories.jobs.get_or_raise(fence.job_id)
+                manifest = run.config_snapshot.get("context_manifest", {})
+                if not (
+                    (job.payload or {}).get("rebuild_context") is True
+                    and isinstance(manifest, dict)
+                    and manifest.get("complete") is False
+                ):
+                    raise AuthorizationError(Decision(code=DenialCode.ACL_CONTEXT_INVALIDATED))
             assert facts.target is not None
             origin_ids: set[UUID] = set()
             texts = []
@@ -654,6 +668,8 @@ class KnowledgeService:
                 }
             ):
                 await uow.repositories.resources.get_for_update(resource_id)
+            if fence is not None:
+                await require_task(uow, actor, run, fence)
             for source in inherited:
                 dependency = await source_fact(uow, source, run.user_id)
                 if not source_decision(current_actor, facts, dependency).allowed:

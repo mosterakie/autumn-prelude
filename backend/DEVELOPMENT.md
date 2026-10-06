@@ -218,3 +218,13 @@ E8 已提供正式结果与 lease/代际/权限同事务的提交闸门；H 仍�
 - ContextLoader 从业务数据库选择获准历史并重新登记完整来源，失效历史不进入模型；当前代际片段重新读取与复核，不从 checkpoint 提取私人正文。上下文装配与补充请求也增加 TaskFence，补充等待与原任务完成原子提交。
 - waiting_auth 使用现有受控恢复入口换绑同一用户的当前 Session；首次装配前验证过期，仅当前 epoch 的空来源闭包允许补齐，不借此放行旧资料。恢复后重新进入授权节点，预算和原额度预留继续沿用。
 - 1 项真实 PostgreSQL 基础流程通过，验证旧会话撤销、新会话换绑、跨账号拒绝、代际前进和预算保留；Ruff、105 文件 mypy strict 通过。本地提交，未推送。
+
+## G7 完整业务运行链路与来源提交（2026-10-06）
+
+- AgentRuntime 串起真实图节点与 E/F 服务。ModelDriver 是事务外端口，规划调用只结算 ProviderCall，正式 assistant 消息与任务终态仍通过 E8 联合提交闸门。多轮规划/工具/恢复只扣一次问答额度。
+- 每轮模型输入绑定真实用户消息、当前 generation 的 run_sources 和 context_manifest；全部检索片段先登记精确 revision/publication/ACL/index/chunk/locator，恢复时重读当前获准片段。人工确认后的操作结果只使用数据库成功记录的白名单元数据。
+- 活跃请求期间定时复核权限/lease，失效时尽量取消上游并丢弃迟到输出。累计耗时包含失败等待，unknown 不作为零费用或自动重发依据；当前未结清模型调用阻止新派发。
+- 框架 checkpoint 仅含调度状态与应用 Run/代际标记；节点错误转换为稳定错误码，供应商异常正文不会进入 checkpoint。按当前 LangGraph 根图的实际实现使用空 namespace，应用 metadata 避开会触发旧节点恢复的 run_id 名称；同一 saver 的补充恢复仍重新进入授权节点。
+- G7 的 5 项真实数据库/图基础流程通过：检索回复、补充与同一 saver 恢复、生成中撤回来源、供应商异常隔离、人工确认后切换 ACL 上下文继续回复。集中基础核对共 20 项通过、0 跳过（13 项 G 用例 + 7 项受影响服务/API），没有全量回归或扩展并发矩阵。
+- Ruff 与 178 文件格式检查、106 源文件 mypy strict、Alembic check 和 diff 检查通过；无新增表或迁移。5442 独立测试库，业务库无写入；未调用付费供应商或邮件服务。
+- G1–G7 完成，接入入口、默认预算、注册工具与边界见 [G_STAGE_AGENT.md](G_STAGE_AGENT.md)。H 继续 Worker 主循环/heartbeat/handler/回收/对账和 Postgres saver；I 接入真实模型、联网与邮件端口。每节点本地提交，未推送或部署。

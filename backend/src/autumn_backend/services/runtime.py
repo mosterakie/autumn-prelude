@@ -1,7 +1,7 @@
 """Agent 的数据库身份、任务票据和永久累计预算；不依赖 agent 包。"""
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -9,14 +9,16 @@ from sqlalchemy import select
 
 from autumn_backend.config import Settings, get_settings
 from autumn_backend.db.enums import (
+    ActionStatus,
     JobStatus,
     MessageRole,
     MessageStatus,
+    ProviderCallPurpose,
     ProviderCallStatus,
     RunEventType,
     RunStatus,
 )
-from autumn_backend.db.models import Message, ProviderCall, Run
+from autumn_backend.db.models import Action, Message, ProviderCall, Run
 from autumn_backend.db.session import UnitOfWork, UnitOfWorkFactory
 from autumn_backend.errors import ConflictError, DomainError, NotFoundError, OptimisticLockError
 from autumn_backend.policies import ActorContext, ActorRole, Decision, DenialCode
@@ -32,12 +34,17 @@ StopCode = Literal[
     "AGENT_BUDGET_EXCEEDED",
     "MODEL_OUTPUT_INVALID",
     "PROVIDER_ERROR",
+    "PROVIDER_OUTCOME_UNKNOWN",
     "AGENT_ERROR",
 ]
 
 
 class BudgetExceededError(DomainError):
     code = "agent_budget_exceeded"
+
+
+class ProviderReconciliationRequired(ConflictError):
+    code = "provider_outcome_unknown"
 
 
 class Limits(BaseModel):
@@ -82,6 +89,28 @@ class RuntimeTicket:
     request_text: str
     history_ids: tuple[UUID, ...]
     record: RuntimeRecord
+
+
+@dataclass(frozen=True, slots=True)
+class Stopped:
+    run_id: UUID
+    generation: int
+    status: RunStatus
+    code: StopCode
+
+
+def spend_time_in_uow(run: Run, elapsed_ms: int) -> None:
+    if type(elapsed_ms) is not int or elapsed_ms < 0:
+        raise ConflictError("耗时无效")
+    try:
+        record = RuntimeRecord.model_validate(run.config_snapshot["agent_runtime"])
+    except (KeyError, ValidationError) as error:
+        raise ConflictError("运行预算损坏") from error
+    usage = record.usage.model_copy(update={"elapsed_ms": record.usage.elapsed_ms + elapsed_ms})
+    if usage.elapsed_ms > record.limits.elapsed_ms:
+        raise BudgetExceededError("运行时间预算已用尽")
+    record = record.model_copy(update={"usage": usage})
+    run.config_snapshot = {**run.config_snapshot, "agent_runtime": record.model_dump()}
 
 
 class RuntimeService:
@@ -233,11 +262,15 @@ class RuntimeService:
                 uow, ticket.job_id, ticket.token, generation=ticket.generation, context=context
             )
 
-    async def stop(self, job_id: UUID, token: UUID, *, code: StopCode) -> UUID:
+    async def stop(
+        self, job_id: UUID, token: UUID, *, code: StopCode, elapsed_ms: int = 0
+    ) -> Stopped:
         """可信运行器的失败收尾；即使会话过期也只允许当前 lease 写停止元数据。
 
         不读取或返回私人正文，不放行工具或结果，不授权继续执行。旧代际不能收尾新任务。
         """
+        if type(elapsed_ms) is not int or elapsed_ms < 0:
+            raise ConflictError("耗时无效")
         async with self.uows() as uow:
             probe = await uow.repositories.jobs.get_or_raise(job_id)
             if (
@@ -267,6 +300,15 @@ class RuntimeService:
                 or run.status not in (RunStatus.QUEUED, RunStatus.RUNNING)
             ):
                 raise OptimisticLockError("停止请求不属于当前执行")
+            record = self._record(run)
+            record = record.model_copy(
+                update={
+                    "usage": record.usage.model_copy(
+                        update={"elapsed_ms": record.usage.elapsed_ms + elapsed_ms}
+                    )
+                }
+            )
+            run.config_snapshot = {**run.config_snapshot, "agent_runtime": record.model_dump()}
             calls = (
                 await uow.session.scalars(
                     select(ProviderCall)
@@ -316,7 +358,122 @@ class RuntimeService:
                 error_code=code,
                 result={"run_id": str(run.id), "execution_generation": run.execution_generation},
             )
-            return run.id
+            return Stopped(run.id, run.execution_generation, run.status, code)
+
+    async def prepare_model(
+        self, ticket: RuntimeTicket, *, provider: str, model: str, ordinal: int
+    ) -> UUID:
+        if not provider.strip() or len(provider) > 64 or not model.strip() or len(model) > 128:
+            raise ConflictError("供应商配置无效")
+        async with self.uows() as uow:
+            _, run, _ = await self._locked(
+                uow, ticket.job_id, ticket.token, generation=ticket.generation, context=True
+            )
+            record = self._record(run)
+            if ordinal != record.usage.model_calls or ordinal < 1:
+                raise ConflictError("模型调用预算身份不匹配")
+            unsettled = await uow.session.scalar(
+                select(ProviderCall.id)
+                .where(
+                    ProviderCall.run_id == run.id,
+                    ProviderCall.purpose.in_((ProviderCallPurpose.CHAT, ProviderCallPurpose.TOOL)),
+                    ProviderCall.status.in_(
+                        (ProviderCallStatus.DISPATCHED, ProviderCallStatus.UNKNOWN)
+                    ),
+                )
+                .limit(1)
+            )
+            if unsettled is not None:
+                raise ProviderReconciliationRequired("未结清的模型调用需要受控对账")
+            call = (
+                await uow.repositories.provider_calls.prepare(
+                    provider=provider,
+                    model=model,
+                    purpose=ProviderCallPurpose.CHAT,
+                    logical_call_key=f"agent:{run.id}:g{run.execution_generation}:model:{ordinal}",
+                    run_id=run.id,
+                    job_id=ticket.job_id,
+                )
+            ).record
+            if call.status is not ProviderCallStatus.PREPARED:
+                raise ProviderReconciliationRequired("既有调用不能重新派发")
+            sources = await uow.repositories.knowledge.sources(
+                run.id, context_generation=run.execution_generation
+            )
+            requests = (
+                await uow.session.scalars(
+                    select(Message.id)
+                    .where(
+                        Message.run_id == run.id,
+                        Message.role == MessageRole.USER,
+                        Message.status == MessageStatus.COMPLETE,
+                    )
+                    .order_by(Message.seq)
+                )
+            ).all()
+            inputs = list(run.config_snapshot.get("model_inputs", []))
+            entry = {
+                "schema_version": 1,
+                "call_id": str(call.id),
+                "execution_generation": run.execution_generation,
+                "source_ids": [str(source.id) for source in sources],
+                "request_message_ids": [str(identifier) for identifier in requests],
+                "context_manifest": run.config_snapshot["context_manifest"],
+            }
+            if not any(item.get("call_id") == str(call.id) for item in inputs):
+                inputs.append(entry)
+            run.config_snapshot = {**run.config_snapshot, "model_inputs": inputs}
+            run.version += 1
+            await uow.session.flush()
+            await self._locked(
+                uow, ticket.job_id, ticket.token, generation=ticket.generation, context=True
+            )
+            return call.id
+
+    async def completed_actions(self, ticket: RuntimeTicket) -> tuple[dict[str, Any], ...]:
+        async with self.uows() as uow:
+            actor, run, _ = await self._locked(
+                uow, ticket.job_id, ticket.token, generation=ticket.generation, context=True
+            )
+            if (
+                actor.role is not ActorRole.OWNER
+                or actor.step_up_expires_at is None
+                or actor.step_up_expires_at <= await uow.repositories.users.database_time()
+            ):
+                return ()
+            actions = (
+                await uow.session.scalars(
+                    select(Action)
+                    .where(
+                        Action.run_id == run.id,
+                        Action.actor_id == actor.user_id,
+                        Action.status == ActionStatus.SUCCEEDED,
+                    )
+                    .order_by(Action.created_at, Action.id)
+                    .limit(20)
+                )
+            ).all()
+            keys = {
+                "resource_id",
+                "publication_id",
+                "memory_id",
+                "settings_key",
+                "resource_version",
+                "acl_version",
+                "scope_epoch",
+                "changed",
+            }
+            return tuple(
+                {
+                    "action_id": str(action.id),
+                    "type": action.type.value,
+                    "status": "succeeded",
+                    "result": {
+                        key: value for key, value in (action.result or {}).items() if key in keys
+                    },
+                }
+                for action in actions
+            )
 
     async def reserve(
         self,

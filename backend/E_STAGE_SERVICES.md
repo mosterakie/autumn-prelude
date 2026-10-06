@@ -149,6 +149,7 @@ Run 的上下文不完整、推进代际、排队 run.resume(rebuild_context=Tru
 Ruff、格式、78 文件 mypy strict、git diff --check、增量迁移回退/升级与 Alembic check 通过。
 测试库独立使用 5442；业务库未修改。各节点本地提交，没有推送或部署。
 
-下一步 F 接入邮箱/密码认证、站长升级验证、资源/动作/Run API 与 SSE；G/H/I
-接入 LangGraph、Worker 调度/heartbeat/业务 handler 和 DeepSeek/Tavily/百炼/邮件。
-E 的完成范围是应用服务和事务边界，当前网站尚未完成真实登录与模型端到端联通。
+F 已接入邮箱/密码认证、站长升级验证、资源/动作/Run API 与 SSE；G 已接入
+最小 LangGraph 与业务运行链路，见 [G_STAGE_AGENT.md](G_STAGE_AGENT.md)。H/I 继续
+接入 Worker 调度/heartbeat/业务 handler 和 DeepSeek/Tavily/百炼/邮件。
+E 的完成范围是应用服务和事务边界，当前网站尚未完成真实模型端到端联通。
