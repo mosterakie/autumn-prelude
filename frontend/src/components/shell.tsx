@@ -37,12 +37,18 @@ export function Header() {
               {label}
             </Link>
           ))}
+          {session.user?.role === "owner" && (
+            <Link href="/admin/content" onClick={() => setOpen(false)}>
+              工作台
+            </Link>
+          )}
           <Link
-            href="/chat"
+            href={session.user?.role === "owner" ? "/admin/chat" : "/chat"}
             onClick={() => setOpen(false)}
             className="nav-chat"
           >
-            <Sparkles size={15} /> 与助手聊聊
+            <Sparkles size={15} />
+            {session.user?.role === "owner" ? "私人助手" : "与助手聊聊"}
           </Link>
         </nav>
         <div className="row header-actions">
@@ -99,6 +105,24 @@ export const adminLinks = [
   ["/admin/moderation", "留言审核"],
   ["/admin/settings", "站点设置"],
 ];
+export function OwnerContentLinks({ kind }: { kind?: "article" | "bookmark" }) {
+  const session = useSession();
+  if (session.user?.role !== "owner") return null;
+  return (
+    <div className="row wrap">
+      {(!kind || kind === "article") && (
+        <Link className="button" href="/admin/content?create=article">
+          写手记
+        </Link>
+      )}
+      {(!kind || kind === "bookmark") && (
+        <Link className="button" href="/admin/content?create=bookmark">
+          收藏网址
+        </Link>
+      )}
+    </div>
+  );
+}
 export function AdminNav() {
   const path = usePathname(),
     session = useSession();
@@ -158,14 +182,18 @@ export function AccountPage() {
         </div>
       )}
       <div className="row wrap">
-        <Link href="/chat" className="button primary">
+        <Link
+          href={session.user?.role === "owner" ? "/admin/chat" : "/chat"}
+          className="button primary"
+        >
           继续对话 <Sparkles size={16} />
         </Link>
         {session.user?.role === "owner" && (
-          <Link href="/admin/chat" className="button">
+          <Link href="/admin/content" className="button">
             进入工作台
           </Link>
         )}
+        <OwnerContentLinks />
         <button
           className="button"
           onClick={async () => {

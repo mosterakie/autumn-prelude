@@ -38,7 +38,12 @@ import {
   Spinner,
 } from "./ui";
 const kindLabel = { article: "手记", bookmark: "收藏", document: "文档" };
-export function ContentAdmin() {
+export function ContentAdmin({
+  initialKind,
+}: {
+  initialKind?: "article" | "bookmark";
+}) {
+  const request = useIdempotentRequest();
   const session = useSession(),
     client = useQueryClient(),
     key = ["resources", session.user!.id, "owner"],
@@ -46,7 +51,12 @@ export function ContentAdmin() {
       queryKey: key,
       queryFn: () => api<Page<Resource>>("/resources"),
     });
-  const [editing, setEditing] = useState<Resource | "new" | null>(null),
+  const [editing, setEditing] = useState<Resource | "new" | null>(
+      initialKind ? "new" : null,
+    ),
+    [newKind, setNewKind] = useState<"article" | "bookmark">(
+      initialKind || "article",
+    ),
     [preview, setPreview] = useState<Resource | null>(null),
     [remove, setRemove] = useState<Resource | null>(null),
     [error, setError] = useState(""),
@@ -58,10 +68,25 @@ export function ContentAdmin() {
         eyebrow="WORKSPACE / CONTENT"
         title="整理每一段思考"
         aside={
-          <Button className="primary" onClick={() => setEditing("new")}>
-            <Plus size={16} />
-            新建内容
-          </Button>
+          <div className="row wrap">
+            <Button
+              className="primary"
+              onClick={() => {
+                setNewKind("article");
+                setEditing("new");
+              }}
+            >
+              <Plus size={16} /> 写手记
+            </Button>
+            <Button
+              onClick={() => {
+                setNewKind("bookmark");
+                setEditing("new");
+              }}
+            >
+              <LinkIcon size={16} /> 收藏网址
+            </Button>
+          </div>
         }
       >
         草稿可以慢慢写。公开哪个版本，由你决定。
@@ -137,7 +162,7 @@ export function ContentAdmin() {
                       className="compact"
                       onClick={async () => {
                         try {
-                          await mutate(
+                          await request(
                             `/resources/${r.id}/publication/revoke`,
                             {
                               expected_version: r.version,
@@ -169,11 +194,18 @@ export function ContentAdmin() {
       )}
       {editing && (
         <Modal
-          title={editing === "new" ? "新建内容" : "编辑私人草稿"}
+          title={
+            editing === "new"
+              ? newKind === "bookmark"
+                ? "收藏网址"
+                : "写一篇手记"
+              : "编辑私人草稿"
+          }
           onClose={() => setEditing(null)}
         >
           <ResourceEditor
             resource={editing === "new" ? null : editing}
+            initialKind={newKind}
             onSaved={() => {
               refresh();
               setEditing(null);
@@ -202,7 +234,7 @@ export function ContentAdmin() {
             className="primary"
             onClick={async () => {
               try {
-                await mutate(
+                await request(
                   `/resources/${remove.id}`,
                   {
                     expected_version: remove.version,
@@ -227,14 +259,16 @@ export function ContentAdmin() {
 }
 function ResourceEditor({
   resource,
+  initialKind,
   onSaved,
 }: {
   resource: Resource | null;
+  initialKind: "article" | "bookmark";
   onSaved: () => void;
 }) {
   const request = useIdempotentRequest();
   const [kind, setKind] = useState<Resource["kind"]>(
-      resource?.kind || "article",
+      resource?.kind || initialKind,
     ),
     [title, setTitle] = useState(resource?.current_revision.title || ""),
     [body, setBody] = useState(resource?.current_revision.body_text || ""),
@@ -244,8 +278,7 @@ function ResourceEditor({
       resource?.current_revision.tags.join("，") || "",
     ),
     [busy, setBusy] = useState(false),
-    [error, setError] = useState(""),
-    [key] = useState(newKey);
+    [error, setError] = useState("");
   return (
     <form
       className="form-stack"
@@ -269,7 +302,7 @@ function ResourceEditor({
               .filter(Boolean),
           };
           if (resource)
-            await mutate(
+            await request(
               `/resources/${resource.id}`,
               { expected_version: resource.version, ...changes },
               "PATCH",
@@ -345,7 +378,7 @@ function ResourceEditor({
       </p>
       {error && <Notice error>{error}</Notice>}
       <Button busy={busy} className="primary">
-        保存草稿
+        {kind === "bookmark" ? "保存私人收藏" : "保存私人草稿"}
       </Button>
     </form>
   );

@@ -40,6 +40,7 @@ import {
   safeExternal,
 } from "@/lib/safety";
 import { useSession } from "./providers";
+import { OwnerContentLinks } from "./shell";
 import { AssistantAvatar } from "./avatar";
 import { ActionPreview } from "./actions";
 import { Button, Empty, Markdown, Modal, Notice } from "./ui";
@@ -89,7 +90,9 @@ export function Chat({
     [connection, setConnection] = useState(""),
     [citations, setCitations] = useState<Citation[] | null>(null),
     [sidebar, setSidebar] = useState(true),
-    [searchMode, setSearchMode] = useState<Ask["search_mode"]>("site"),
+    [searchMode, setSearchMode] = useState<Ask["search_mode"]>(
+      owner ? "auto" : "site",
+    ),
     [inputAnswer, setInputAnswer] = useState(""),
     [streamEpoch, setStreamEpoch] = useState(0),
     [olderCursor, setOlderCursor] = useState<string | null | undefined>(),
@@ -716,6 +719,15 @@ export function Chat({
           <div ref={scroll} />
         </div>
         <div className="composer-area">
+          {!owner && session.user?.role === "owner" && (
+            <Notice>
+              当前是公开问答，仅检索站内公开资料。
+              <Link href="/admin/chat" className="text-button">
+                打开私人助手，验证后可联网、收藏和写手记
+              </Link>
+              <OwnerContentLinks />
+            </Notice>
+          )}
           {connection && <Notice>{connection}</Notice>}
           {error && (
             <Notice error>
@@ -800,15 +812,19 @@ export function Chat({
                 </span>
                 {owner && (
                   <label className="search-toggle">
-                    <input
-                      type="checkbox"
-                      checked={searchMode === "web"}
-                      onChange={(e) =>
-                        setSearchMode(e.target.checked ? "web" : "site")
-                      }
-                    />
                     <Globe size={14} />
-                    联网搜索
+                    <select
+                      aria-label="搜索范围"
+                      value={searchMode}
+                      onChange={(e) =>
+                        setSearchMode(e.target.value as Ask["search_mode"])
+                      }
+                      disabled={active || busy}
+                    >
+                      <option value="auto">自动判断 · 可联网</option>
+                      <option value="site">仅站内资料</option>
+                      <option value="web">允许联网搜索</option>
+                    </select>
                   </label>
                 )}
               </div>

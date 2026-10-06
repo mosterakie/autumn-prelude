@@ -79,14 +79,19 @@ export function ActionPreview({
       <p className="muted">{action.impact}</p>
       <div className="inset">
         <p className="small muted">
-          目标版本 {action.expected_version}
+          {action.expected_version == null
+            ? action.type === "create_resource"
+              ? "新建私人内容 · 确认后保存，不会自动公开"
+              : "确认后执行预览中的操作"
+            : `目标版本 ${action.expected_version}`}
           {action.expected_acl_version != null &&
             ` · 权限版本 ${action.expected_acl_version}`}
         </p>
         <dl className="change-list">
           {Object.entries(action.changes)
             .filter(
-              ([key]) =>
+              ([key, value]) =>
+                value != null &&
                 ![
                   "revision_id",
                   "expected_version",
@@ -97,6 +102,12 @@ export function ActionPreview({
               <div key={key}>
                 <dt>
                   {{
+                    kind: "内容类型",
+                    title: "标题",
+                    body_text: "正文",
+                    url: "网址",
+                    private_note: "私人备注",
+                    tags: "标签",
                     public_fields: "公开字段",
                     ai_enabled: "允许问答引用",
                     raw_download_enabled: "原文件下载",
@@ -116,18 +127,23 @@ export function ActionPreview({
                       : "不允许"
                     : Array.isArray(value)
                       ? value
-                          .map(
-                            (v) =>
-                              ({
-                                title: "标题",
-                                body_text: "正文",
-                                url: "网址",
-                                tags: "标签",
-                                private_note: "私人备注",
-                              })[String(v)] || String(v),
+                          .map((v) =>
+                            key === "public_fields"
+                              ? {
+                                  title: "标题",
+                                  body_text: "正文",
+                                  url: "网址",
+                                  tags: "标签",
+                                  private_note: "私人备注",
+                                }[String(v)] || String(v)
+                              : String(v),
                           )
                           .join("、")
-                      : String(value)}
+                      : key === "kind"
+                        ? { article: "手记", bookmark: "网址收藏" }[
+                            String(value)
+                          ] || String(value)
+                        : String(value)}
                 </dd>
               </div>
             ))}
@@ -183,7 +199,8 @@ export function ActionPreview({
               className="primary"
               busy={busy}
               disabled={
-                !confirmed || ["cancelled", "expired"].includes(action.status)
+                !confirmed ||
+                ["cancelled", "expired", "failed"].includes(action.status)
               }
               onClick={execute}
             >

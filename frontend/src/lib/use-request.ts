@@ -5,7 +5,11 @@ import { mutate, newKey } from "./api";
 // edited input or a deliberate later operation a fresh identity.
 export function useIdempotentRequest() {
   const pending = useRef<{ signature: string; key: string } | null>(null);
-  return async function request<T>(path: string, body: unknown): Promise<T> {
+  return async function request<T>(
+    path: string,
+    body: unknown,
+    method: "POST" | "PATCH" | "DELETE" = "POST",
+  ): Promise<T> {
     let payload = body;
     if (body instanceof FormData) {
       payload = await Promise.all(
@@ -29,10 +33,10 @@ export function useIdempotentRequest() {
         ]),
       );
     }
-    const signature = JSON.stringify([path, payload]);
+    const signature = JSON.stringify([method, path, payload]);
     if (!pending.current || pending.current.signature !== signature)
       pending.current = { signature, key: newKey() };
-    const result = await mutate<T>(path, body, "POST", pending.current.key);
+    const result = await mutate<T>(path, body, method, pending.current.key);
     pending.current = null;
     return result;
   };

@@ -1557,9 +1557,12 @@ input[type="checkbox"] {
   align-items: center;
   gap: 5px;
 }
-.search-toggle input {
-  width: 13px;
-  height: 13px;
+.search-toggle select {
+  width: auto;
+  max-width: 165px;
+  padding: 5px 8px;
+  font-size: 11px;
+  color: inherit;
 }
 .composer-footnote {
   text-align: center;
@@ -1661,6 +1664,9 @@ input[type="checkbox"] {
 .change-list dd {
   margin: 0;
   overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  max-height: 240px;
+  overflow-y: auto;
 }
 .knowledge-grid {
   display: grid;
