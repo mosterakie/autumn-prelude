@@ -15,6 +15,8 @@ from autumn_backend.services.execution import ExecutionService
 from autumn_backend.services.input_waits import InputWaitService
 from autumn_backend.services.knowledge import KnowledgeService
 from autumn_backend.services.runtime import RuntimeService
+from autumn_backend.services.storage import StorageService
+from autumn_backend.services.tasks import TaskService
 from autumn_backend.workers.registry import Handler
 
 
@@ -23,6 +25,16 @@ def run_handlers(runtime: AgentRuntime) -> dict[str, Handler]:
         await runtime.execute(job.id, job.token)
 
     return {"run.dispatch": dispatch, "run.resume": dispatch}
+
+
+def storage_handlers(storage: StorageService, tasks: TaskService) -> dict[str, Handler]:
+    async def finalize(job: LeasedJob) -> None:
+        await storage.finalize(await tasks.actor(job), job.id, job.token)
+
+    async def delete(job: LeasedJob) -> None:
+        await storage.run_delete(await tasks.actor(job), job.id, job.token)
+
+    return {"storage.finalize": finalize, "storage.delete": delete}
 
 
 def agent_runtime(

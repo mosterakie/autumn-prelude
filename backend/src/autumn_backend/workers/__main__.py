@@ -37,13 +37,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="秋序后台任务执行器")
     parser.add_argument("--once", action="store_true", help="最多执行一个任务后退出")
     parser.add_argument("--setup-checkpoints", action="store_true", help="显式初始化框架专用表")
-    parser.add_argument("--factory", help="可信本地装配入口 module:factory")
+    parser.add_argument(
+        "--factory",
+        default="autumn_backend.workers.bootstrap:worker",
+        help="可信本地装配入口 module:factory",
+    )
     args = parser.parse_args()
     if args.setup_checkpoints:
         asyncio.run(setup_checkpoints(), loop_factory=loop_factory)
         return
-    if not args.factory:
-        parser.error("执行任务需要配置可信 --factory")
     module, name = args.factory.split(":", 1)
     factory = cast(Factory, getattr(importlib.import_module(module), name))
     try:

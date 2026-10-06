@@ -30,6 +30,7 @@ from autumn_backend.api.middleware import install_request_middleware
 from autumn_backend.api.public import router as public_router
 from autumn_backend.api.quota import router as quota_router
 from autumn_backend.api.resources import router as resource_router
+from autumn_backend.api.tasks import router as task_router
 from autumn_backend.auth.service import AuthService
 from autumn_backend.config import Settings, get_settings
 from autumn_backend.db.session import UnitOfWorkFactory, create_engine, create_session_factory
@@ -44,6 +45,7 @@ from autumn_backend.services.quota import QuotaService
 from autumn_backend.services.resources import ResourceService
 from autumn_backend.services.runs import RunService
 from autumn_backend.services.storage import StorageService
+from autumn_backend.services.tasks import TaskService
 from autumn_backend.storage.local import LocalObjectStore
 
 logger = get_logger(__name__)
@@ -67,6 +69,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.resources = ResourceService(app.state.uows, app.state.storage)
         app.state.public = PublicService(app.state.uows, app.state.storage.store)
         app.state.actions = ActionService(app.state.uows)
+        app.state.tasks = TaskService(app.state.uows)
         app.state.publications = PublicationService(app.state.uows)
         app.state.chats = ChatService(app.state.uows)
         app.state.runs = RunService(app.state.uows, settings=settings)
@@ -115,6 +118,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(chat_router)
     app.include_router(event_router)
     app.include_router(resource_router)
+    app.include_router(task_router)
     app.include_router(public_router)
     app.include_router(comment_router)
     app.include_router(action_router)

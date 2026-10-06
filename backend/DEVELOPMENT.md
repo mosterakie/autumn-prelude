@@ -246,3 +246,9 @@ E8 已提供正式结果与 lease/代际/权限同事务的提交闸门；H 仍�
 - run.dispatch / run.resume 调用同一 AgentRuntime 装配入口，身份、预算、正文与恢复均通过已有服务重读；依赖方向 workers → agent。
 - 官方 langgraph-checkpoint-postgres 3.1.2，框架表显式 setup 至 autumn_checkpoints 专用 schema；普通启动只核对迁移版本，不建表。autocommit/dict_row 与 Windows Selector 事件循环已适配。
 - 1 项真实运行/官方 saver 基础流程通过，关闭连接再打开可读取调度记录且无问题/回复正文；Ruff、112 源文件 mypy strict 通过。仅独立测试库建立测试 schema，业务库无写入；本地提交，未推送。
+
+## H4 文件任务处理器（2026-10-06）
+
+- 默认 Worker 装配 storage.finalize / storage.delete，从任务关联 User/Session 重建身份，服务再次检查当前权限、会话绑定与 lease，事务外幂等对象操作后联合落库。
+- 文件/索引任务验证过期可等待；新增 POST /api/owner/jobs/{id}/resume，以当前站长额外验证、本人任务、版本和供应商未结清闸门换绑 Session。不会自行延长验证，也不换绑已确认动作。
+- 1 项基础串联流程通过：验证过期等待、重新验证恢复、转正及删除；Ruff、114 源文件 mypy strict 通过。节点本地提交，未推送。

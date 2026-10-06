@@ -10,7 +10,12 @@ from sqlalchemy.dialects.postgresql import insert
 
 from autumn_backend.db.enums import JobStatus
 from autumn_backend.db.models import Job
-from autumn_backend.errors import ConflictError, InvalidInputError, LeaseLostError
+from autumn_backend.errors import (
+    ConflictError,
+    InvalidInputError,
+    LeaseLostError,
+    OptimisticLockError,
+)
 from autumn_backend.repositories.base import ControlledMutableRepository
 from autumn_backend.repositories.constraints import database_errors
 from autumn_backend.repositories.result import Creation
@@ -191,6 +196,30 @@ class JobRepository(ControlledMutableRepository[Job]):
                 lease_expires_at=None,
             ),
         )
+
+    async def pause_auth(self, job_id: UUID, token: UUID, *, error_code: str) -> Job:
+        return await self._leased_update(
+            job_id,
+            token,
+            dict(
+                status=JobStatus.WAITING_AUTH,
+                lease_token=None,
+                lease_expires_at=None,
+                error_code=error_code,
+            ),
+        )
+
+    async def resume_auth(self, job_id: UUID, *, expected_version: int, session_id: UUID) -> Job:
+        job = await self.get_for_update_or_raise(job_id)
+        if job.version != expected_version or job.status is not JobStatus.WAITING_AUTH:
+            raise OptimisticLockError("等待任务已变化")
+        if job.attempts >= job.max_attempts:
+            raise ConflictError("任务尝试次数已用尽")
+        job.auth_session_id, job.status = session_id, JobStatus.QUEUED
+        job.available_at, job.error_code = await self.database_time(), None
+        job.version += 1
+        await self.session.flush()
+        return job
 
     async def reclaim(
         self, job_id: UUID, expired_token: UUID, *, status: JobStatus, error_code: str

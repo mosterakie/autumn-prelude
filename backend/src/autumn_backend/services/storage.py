@@ -156,7 +156,11 @@ class StorageService:
     ) -> FileObject:
         await self._authorize(uow, actor)
         job = await uow.repositories.jobs.require_lease(job_id, token)
-        if job.actor_id != actor.user_id or job.kind != kind:
+        if (
+            job.actor_id != actor.user_id
+            or job.auth_session_id != actor.auth_session_id
+            or job.kind != kind
+        ):
             raise NotFoundError("文件任务不存在")
         value = job.payload.get("file_id") if job.payload is not None else None
         if not isinstance(value, str):
