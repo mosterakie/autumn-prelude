@@ -17,7 +17,7 @@ F2 提供真实 PostgreSQL 认证模块，F3 已接入 HTTP 登录/注册/验证
 
 首次验证按当时 AI 设置写入固定 cooldown_until，默认 24 小时；后来再次验证不会延长或清除它。账号/IP 两套 HMAC 速率桶对成功和失败尝试均生效，计数使用独立短事务，错误不会回滚已消耗的尝试次数。不信任客户端 X-Forwarded-For；反向代理支持另行配置。
 
-邮件与一次性令牌同事务创建 auth.email job。Job 只有对象 ID、用途、密钥版本与 Fernet 密文，无明文邮箱/令牌。消费后清除任务密文并取消尚未发送的 queued job。H 阶段实现 SMTP handler、发送结束和过期时的密文清理；本节点未发送真实邮件，尚未完成邮件注册体验联调。
+邮件与一次性令牌同事务创建 auth.email job。Job 只有对象 ID、用途、密钥版本与 Fernet 密文，无明文邮箱/令牌。消费后清除任务密文并取消尚未发送的 queued job。计划中的 SMTP handler 尚未实现；默认 Worker 不领取 auth.email，未配置 SMTP 字段，也没有真实发送链路。不能把注册 HTTP 202 当作邮件已发送。配置位置、接入准备和剩余步骤见 [EMAIL_CONFIGURATION.md](EMAIL_CONFIGURATION.md)。
 
 ## 站长引导
 
