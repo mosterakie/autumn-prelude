@@ -34,6 +34,7 @@ class DeepSeekModel:
         document = json.loads(prompt)
         system = document.pop("system")
         trusted = {name: document.pop(name) for name in ("tools", "output_schema")}
+        trusted["runtime_context"] = document.pop("runtime_context", {})
         task = asyncio.current_task()
         assert task is not None
         if external_idempotency_key in self.pending:

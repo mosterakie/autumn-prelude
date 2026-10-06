@@ -29,11 +29,22 @@ from autumn_backend.errors import (
     OptimisticLockError,
 )
 from autumn_backend.jobs.queue import enqueue
-from autumn_backend.policies import ActorContext
-from autumn_backend.policies.facts import Operation, PolicyFacts, TargetFacts, TargetKind
+from autumn_backend.policies import ActorContext, Decision, DenialCode
+from autumn_backend.policies.facts import (
+    ConversationMode,
+    Operation,
+    PolicyFacts,
+    TargetFacts,
+    TargetKind,
+)
 from autumn_backend.repositories.audit import AuditMetadata
 from autumn_backend.repositories.jobs import JobSpec
-from autumn_backend.services.access import lock_authentication, publication_facts, require_allowed
+from autumn_backend.services.access import (
+    AuthorizationError,
+    lock_authentication,
+    publication_facts,
+    require_allowed,
+)
 from autumn_backend.services.ai_limits import read_ai_limits
 from autumn_backend.services.context import (
     TaskFence,
@@ -42,10 +53,19 @@ from autumn_backend.services.context import (
     run_facts,
 )
 from autumn_backend.services.quota import QuotaService
+from autumn_backend.services.resources import CreateResource, creation_draft
 
 
 class Payload(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
+class ResourceCreatePreview(Payload):
+    target_type: Literal["resource_create"] = "resource_create"
+    kind: Literal["create_resource"] = "create_resource"
+    target_id: None = None
+    expected_version: None = None
+    resource: CreateResource
 
 
 class ResourcePreview(Payload):
@@ -120,7 +140,7 @@ class MemoryPreview(Payload):
         return self
 
 
-Command = ResourcePreview | SettingsPreview | MemoryPreview
+Command = ResourcePreview | ResourceCreatePreview | SettingsPreview | MemoryPreview
 _COMMANDS: TypeAdapter[Command] = TypeAdapter(
     Annotated[Command, Field(discriminator="target_type")]
 )
@@ -153,6 +173,15 @@ def action_dto(action: Action) -> ActionDTO:
     command = parameters.get("command", parameters)
     if not isinstance(command, dict):
         command = {}
+    changes = (
+        command.get("resource", command.get("input", {}))
+        if action.type is ActionType.CREATE_RESOURCE
+        else {
+            key: value
+            for key, value in command.items()
+            if key not in {"schema_version", "target_type", "kind", "target_id"}
+        }
+    )
     target_id = action.target_resource_id or command.get("target_id")
     summary, impact = {
         ActionType.PUBLISH: (
@@ -171,6 +200,8 @@ def action_dto(action: Action) -> ActionDTO:
         ActionType.UPDATE_MEMORY: ("修改助手记忆", "更新本人确认的记忆内容。"),
         ActionType.DELETE_MEMORY: ("删除助手记忆", "停止使用该记忆并安排派生状态清理。"),
     }.get(action.type, ("处理已确认操作", "按预览中固定的参数执行。"))
+    if action.type is ActionType.CREATE_RESOURCE and isinstance(changes, dict):
+        summary = "收藏网址" if changes.get("kind") == "bookmark" else "保存私人手记"
     result = (
         {
             key: value
@@ -204,11 +235,7 @@ def action_dto(action: Action) -> ActionDTO:
         action.expected_version,
         action.expected_acl_version,
         summary,
-        {
-            key: value
-            for key, value in command.items()
-            if key not in {"schema_version", "target_type", "kind", "target_id"}
-        },
+        changes if isinstance(changes, dict) else {},
         impact,
         action.requires_confirmation,
         False,
@@ -251,6 +278,12 @@ class ActionService:
 
     async def _target(self, uow: UnitOfWork, actor: ActorContext, command: Command) -> None:
         auth = await lock_authentication(uow, actor)
+        if isinstance(command, ResourceCreatePreview):
+            require_allowed(
+                actor, await publication_facts(uow, Operation.CREATE_RESOURCE, auth, None)
+            )
+            creation_draft(command.resource)
+            return
         if isinstance(command, ResourcePreview):
             resource = await uow.repositories.resources.get_for_update_or_raise(command.target_id)
             require_allowed(
@@ -356,7 +389,9 @@ class ActionService:
         if (
             not idempotency_key.strip()
             or len(idempotency_key) > 128
-            or not isinstance(command, (ResourcePreview, SettingsPreview, MemoryPreview))
+            or not isinstance(
+                command, (ResourcePreview, ResourceCreatePreview, SettingsPreview, MemoryPreview)
+            )
         ):
             raise InvalidInputError("动作或幂等标识无效")
         parameters = {"schema_version": 1, "command": command.model_dump(mode="json")}
@@ -370,7 +405,7 @@ class ActionService:
             await lock_authentication(uow, actor)
             run = None
             if run_id is not None:
-                _, _, run = await run_facts(
+                _, facts, run = await run_facts(
                     uow,
                     actor,
                     run_id,
@@ -379,6 +414,8 @@ class ActionService:
                     if isinstance(command, ResourcePreview)
                     else (),
                 )
+                if facts.target is None or facts.target.mode is not ConversationMode.OWNER:
+                    raise AuthorizationError(Decision(code=DenialCode.FORBIDDEN))
                 if authorization_message_id is None:
                     raise InvalidInputError("Agent 提议必须绑定用户授权消息")
                 if fence is not None:

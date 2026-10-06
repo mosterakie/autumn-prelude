@@ -109,10 +109,40 @@ def validate_draft(draft: RevisionDraft, kind: ResourceKind) -> RevisionDraft:
     )
 
 
+def creation_draft(command: CreateResource) -> RevisionDraft:
+    if command.slug is not None and not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_-]{0,159}", command.slug
+    ):
+        raise InvalidInputError("slug 无效")
+    return validate_draft(
+        RevisionDraft(
+            title=command.title,
+            body_text=command.body_text,
+            url=command.url,
+            private_note=command.private_note,
+            tags=command.tags,
+        ),
+        ResourceKind(command.kind),
+    )
+
+
 class ResourceService:
     def __init__(self, uows: UnitOfWorkFactory, storage: StorageService | None = None) -> None:
         self.uows = uows
         self.storage = storage
+
+    async def create_in_uow(
+        self, uow: UnitOfWork, actor: ActorContext, command: CreateResource
+    ) -> Resource:
+        """表单与确认后的 Agent 创建共用入口；调用方负责整笔事务与动作结算。"""
+        await self._authorize(uow, actor)
+        assert actor.user_id is not None
+        return await uow.repositories.resources.create(
+            owner_id=actor.user_id,
+            kind=ResourceKind(command.kind),
+            slug=command.slug or uuid4().hex,
+            draft=creation_draft(command),
+        )
 
     async def file(
         self, actor: ActorContext, resource_id: UUID, revision_id: UUID
@@ -320,22 +350,7 @@ class ResourceService:
             if isinstance(command, CreateResource):
                 if resource_id is not None:
                     raise InvalidInputError("创建资源不接受目标 ID")
-                slug = command.slug or uuid4().hex
-                if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,159}", slug):
-                    raise InvalidInputError("slug 无效")
-                draft = validate_draft(
-                    RevisionDraft(
-                        title=command.title,
-                        body_text=command.body_text,
-                        url=command.url,
-                        private_note=command.private_note,
-                        tags=command.tags,
-                    ),
-                    ResourceKind(command.kind),
-                )
-                resource = await uow.repositories.resources.create(
-                    owner_id=actor.user_id, kind=ResourceKind(command.kind), slug=slug, draft=draft
-                )
+                resource = await self.create_in_uow(uow, actor, command)
             else:
                 if resource_id is None:
                     raise InvalidInputError("缺少目标资源")

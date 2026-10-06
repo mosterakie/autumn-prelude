@@ -12,8 +12,14 @@ from autumn_backend.errors import OptimisticLockError
 from autumn_backend.jobs.queue import LeasedJob, enqueue
 from autumn_backend.repositories.jobs import JobSpec
 from autumn_backend.repositories.publications import PublicationProjection
-from autumn_backend.services.actions import Command, MemoryPreview, ResourcePreview
+from autumn_backend.services.actions import (
+    Command,
+    MemoryPreview,
+    ResourceCreatePreview,
+    ResourcePreview,
+)
 from autumn_backend.services.execution import ExecutionService
+from autumn_backend.services.resources import ResourceService
 from autumn_backend.services.tasks import TaskService
 
 
@@ -22,15 +28,32 @@ class ActionExecutionService:
         self.uows = uows
 
     async def execute(self, job: LeasedJob) -> None:
+        actor = await TaskService(self.uows).actor(job)
+
+        async def write(uow: UnitOfWork, action: Action, command: Command) -> dict[str, Any]:
+            if isinstance(command, ResourceCreatePreview):
+                resource = await ResourceService(self.uows).create_in_uow(
+                    uow, actor, command.resource
+                )
+                return {
+                    "resource_id": str(resource.id),
+                    "resource_version": resource.version,
+                    "acl_version": resource.acl_version,
+                    "changed": True,
+                }
+            return await self._write(uow, action, command)
+
         await ExecutionService(self.uows).commit_action_result(
-            await TaskService(self.uows).actor(job),
+            actor,
             job.id,
             job.token,
-            self._write,
+            write,
         )
 
     @staticmethod
     async def _write(uow: UnitOfWork, action: Action, command: Command) -> dict[str, Any]:
+        if isinstance(command, ResourceCreatePreview):
+            raise ValueError("资源创建须使用当前执行身份")
         if isinstance(command, ResourcePreview):
             publication_id = None
             changed = True

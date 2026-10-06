@@ -1,17 +1,19 @@
-"""两个业务参数工具；身份、Run、授权消息与任务资格只由服务端绑定。"""
+"""薄业务工具；身份、Run、授权消息与任务资格只由服务端绑定。"""
 
 import json
 from dataclasses import dataclass
 from typing import Any, Literal
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from autumn_backend.errors import InvalidInputError
 from autumn_backend.policies import ActorRole
-from autumn_backend.services.actions import ActionService, Command
+from autumn_backend.services.actions import ActionService, Command, ResourceCreatePreview
 from autumn_backend.services.context import TaskFence
 from autumn_backend.services.knowledge import Citation, KnowledgeService
+from autumn_backend.services.resources import CreateResource
 from autumn_backend.services.runtime import RuntimeService, RuntimeTicket
 from autumn_backend.services.web_search import WebSearchService
 
@@ -34,8 +36,23 @@ class WebSearch(Input):
     limit: int = Field(default=3, ge=1, le=5)
 
 
+class Bookmark(Input):
+    url: str = Field(min_length=1, max_length=2048)
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    private_note: str | None = Field(default=None, max_length=64000)
+    tags: tuple[str, ...] = Field(default=(), max_length=20)
+
+
+class Note(Input):
+    title: str = Field(min_length=1, max_length=500)
+    body_text: str = Field(min_length=1, max_length=200000)
+    tags: tuple[str, ...] = Field(default=(), max_length=20)
+
+
 class ToolCall(Input):
-    name: Literal["search_knowledge", "search_web", "propose_action"]
+    name: Literal[
+        "search_knowledge", "search_web", "propose_bookmark", "propose_note", "propose_action"
+    ]
     arguments: dict[str, Any]
 
 
@@ -65,7 +82,11 @@ class Tools:
                 "parameters": Search.model_json_schema(),
             }
         ]
-        if ticket.actor.role is ActorRole.OWNER and ticket.actor.step_up_expires_at is not None:
+        if (
+            ticket.actor.role is ActorRole.OWNER
+            and ticket.actor.step_up_expires_at is not None
+            and ticket.mode == "owner"
+        ):
             if (
                 self.web_search is not None
                 and ticket.mode == "owner"
@@ -84,6 +105,20 @@ class Tools:
                     "description": "生成待用户确认的固定操作预览，不直接执行。",
                     "parameters": Proposal.model_json_schema(),
                 }
+            )
+            result.extend(
+                [
+                    {
+                        "name": "propose_bookmark",
+                        "description": "预览新增私人网址收藏，用户确认后保存。仅保存链接，不读取或下载网页；标题可省略。",
+                        "parameters": Bookmark.model_json_schema(),
+                    },
+                    {
+                        "name": "propose_note",
+                        "description": "预览新建私人手记，用户确认后保存草稿；不会自动公开。",
+                        "parameters": Note.model_json_schema(),
+                    },
+                ]
             )
         return tuple(result)
 
@@ -115,12 +150,35 @@ class Tools:
                 )
                 await self.runtime.guard(ticket)
                 return ToolResult(sources=result)
-            proposal = Proposal.model_validate_json(json.dumps(call.arguments))
+            command: Command
+            if call.name == "propose_bookmark":
+                bookmark = Bookmark.model_validate_json(json.dumps(call.arguments))
+                command = ResourceCreatePreview(
+                    resource=CreateResource(
+                        kind="bookmark",
+                        title=bookmark.title or urlsplit(bookmark.url).hostname or bookmark.url,
+                        url=bookmark.url,
+                        private_note=bookmark.private_note,
+                        tags=bookmark.tags,
+                    )
+                )
+            elif call.name == "propose_note":
+                note = Note.model_validate_json(json.dumps(call.arguments))
+                command = ResourceCreatePreview(
+                    resource=CreateResource(
+                        kind="article",
+                        title=note.title,
+                        body_text=note.body_text,
+                        tags=note.tags,
+                    )
+                )
+            else:
+                command = Proposal.model_validate_json(json.dumps(call.arguments)).command
         except ValidationError as error:
             raise InvalidInputError("工具参数不属于允许的业务 schema") from error
         action = await self.actions.preview(
             ticket.actor,
-            proposal.command,
+            command,
             idempotency_key=f"agent:{ticket.run_id}:{ticket.generation}:tool:{step}",
             run_id=ticket.run_id,
             authorization_message_id=ticket.request_id,

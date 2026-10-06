@@ -14,11 +14,18 @@ from tests.integration.test_knowledge_service import service_for
 pytestmark = pytest.mark.integration
 
 
-async def accepted_job(e_case: ServiceCase, *, owner=False, message="请根据获准资料回答"):
+async def accepted_job(
+    e_case: ServiceCase,
+    *,
+    owner=False,
+    message="请根据获准资料回答",
+    mode: ConversationMode | None = None,
+):
     actor = e_case.owner if owner else e_case.member
     async with e_case.uows() as uow:
         conversation = await uow.repositories.conversations.create(
-            user_id=actor.user_id, mode=ConversationMode.OWNER if owner else ConversationMode.PUBLIC
+            user_id=actor.user_id,
+            mode=mode or (ConversationMode.OWNER if owner else ConversationMode.PUBLIC),
         )
     accepted = await RunService(e_case.uows).accept_run(
         actor,

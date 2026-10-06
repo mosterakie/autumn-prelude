@@ -164,6 +164,11 @@ class AgentRuntime:
                 tools=self.tools.schemas(ticket),
                 completed_actions=context.actions,
                 completed_tools=completed_tools,
+                runtime_context={
+                    "role": ticket.actor.role.value,
+                    "mode": ticket.mode,
+                    "search_mode": ticket.search_mode,
+                },
             )
             measured = monotonic()
             record = await self.service.reserve(
