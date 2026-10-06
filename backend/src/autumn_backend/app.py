@@ -23,6 +23,7 @@ from autumn_backend import __version__
 from autumn_backend.api.auth import router as auth_router
 from autumn_backend.api.chats import router as chat_router
 from autumn_backend.api.errors import install_error_handlers
+from autumn_backend.api.events import router as event_router
 from autumn_backend.api.middleware import install_request_middleware
 from autumn_backend.api.public import router as public_router
 from autumn_backend.api.resources import router as resource_router
@@ -32,6 +33,7 @@ from autumn_backend.db.session import UnitOfWorkFactory, create_engine, create_s
 from autumn_backend.observability.logging import configure_logging, get_logger
 from autumn_backend.services.actions import ActionService
 from autumn_backend.services.chats import ChatService
+from autumn_backend.services.events import EventService
 from autumn_backend.services.public import PublicService
 from autumn_backend.services.publication import PublicationService
 from autumn_backend.services.resources import ResourceService
@@ -63,6 +65,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.publications = PublicationService(app.state.uows)
         app.state.chats = ChatService(app.state.uows)
         app.state.runs = RunService(app.state.uows, settings=settings)
+        app.state.events = EventService(app.state.uows)
 
     logger.info(
         "app.startup",
@@ -103,6 +106,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     install_request_middleware(app)
     app.include_router(auth_router)
     app.include_router(chat_router)
+    app.include_router(event_router)
     app.include_router(resource_router)
     app.include_router(public_router)
 
