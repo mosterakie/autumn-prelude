@@ -452,6 +452,8 @@ svg {
   overflow: hidden;
 }
 .art-disc {
+  translate: calc(var(--hero-parallax-x, 0) * -7px)
+    calc(var(--hero-parallax-y, 0) * -6px);
   position: absolute;
   border-radius: 50%;
   background: #e0c5a0;
@@ -484,6 +486,8 @@ svg {
   z-index: -1;
 }
 .art-line {
+  translate: calc(var(--hero-parallax-x, 0) * -4px)
+    calc(var(--hero-parallax-y, 0) * -4px);
   position: absolute;
   height: 600px;
   transform: rotate(31deg);
@@ -499,6 +503,8 @@ svg {
   transform: rotate(-31deg);
 }
 .art-star {
+  translate: calc(var(--hero-parallax-x, 0) * 18px)
+    calc(var(--hero-parallax-y, 0) * 12px);
   position: absolute;
   color: var(--gold);
   font-size: 40px;
@@ -514,6 +520,8 @@ svg {
   font-size: 18px;
 }
 .hero-character {
+  translate: calc(var(--hero-parallax-x, 0) * 12px)
+    calc(var(--hero-parallax-y, 0) * 9px);
   object-fit: contain;
   object-position: center bottom;
   filter: drop-shadow(0 12px 12px #633b261c);
@@ -532,6 +540,14 @@ svg {
   z-index: 3;
   padding: 16px 18px;
   box-shadow: 0 8px 30px #603c2314;
+}
+@media (prefers-reduced-motion: reduce), (hover: none), (pointer: coarse) {
+  .hero-character,
+  .art-disc,
+  .art-line,
+  .art-star {
+    translate: none;
+  }
 }
 .hero-assistant > .row {
   font-size: 13px;

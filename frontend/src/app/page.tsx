@@ -4,12 +4,13 @@ import { ArrowRight, ArrowUpRight, Sparkles, Leaf } from "lucide-react";
 import { getNotes, getBookmarks } from "@/lib/server-data";
 import { NoteList, BookmarkList } from "@/components/public";
 import { DemoBadge } from "@/components/providers";
+import { HeroParallax } from "@/components/hero-parallax";
 export const dynamic = "force-dynamic";
 export default async function Home() {
   const [notes, bookmarks] = await Promise.all([getNotes(), getBookmarks()]);
   return (
     <>
-      <section className="hero panel">
+      <HeroParallax>
         <div className="hero-copy">
           <div className="row wrap">
             <span className="eyebrow">PERSONAL ARCHIVE / 01</span>
@@ -62,6 +63,7 @@ export default async function Home() {
             alt="持折扇的停云角色风格插画"
             fill
             priority
+            draggable={false}
             sizes="(max-width: 760px) 100vw, 55vw"
             className="hero-character"
           />
@@ -81,7 +83,7 @@ export default async function Home() {
             </Link>
           </div>
         </div>
-      </section>
+      </HeroParallax>
       <div className="home-grid">
         <section className="panel home-notes">
           <div className="section-heading">
