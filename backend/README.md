@@ -19,7 +19,7 @@
 问答受理、角色限额、重试和固定额度桶见 [RUN_SERVICE.md](RUN_SERVICE.md)。
 留言提交、一级回复、重复请求与错误边界见 [COMMENT_SERVICE.md](COMMENT_SERVICE.md)。
 额度、文件、知识库、动作等待与正式结果提交见 [E_STAGE_SERVICES.md](E_STAGE_SERVICES.md)。
-邮箱密码/会话认证已接入，说明见 [AUTH_CONTRACT.md](AUTH_CONTRACT.md)。已交付 API、SSE、版本/动作请求体及剩余入口见 [F_STAGE_API.md](F_STAGE_API.md)。LangGraph 与薄工具、权限/预算/等待恢复/来源提交见 [G_STAGE_AGENT.md](G_STAGE_AGENT.md)。Worker 启动、处理器、Postgres 检查点、故障回收与人工对账见 [H_STAGE_WORKERS.md](H_STAGE_WORKERS.md)。真实邮件、模型与联网搜索适配仍待后续接入。
+邮箱密码/会话认证已接入，说明见 [AUTH_CONTRACT.md](AUTH_CONTRACT.md)。已交付 API、SSE、版本/动作请求体及剩余入口见 [F_STAGE_API.md](F_STAGE_API.md)。LangGraph 与薄工具、权限/预算/等待恢复/来源提交见 [G_STAGE_AGENT.md](G_STAGE_AGENT.md)。Worker 启动、处理器、Postgres 检查点、故障回收与人工对账见 [H_STAGE_WORKERS.md](H_STAGE_WORKERS.md)。DeepSeek、百炼嵌入与 Tavily 已接入并通过真实 AI 链路基础验收，见 [PROVIDERS_ACCEPTANCE.md](PROVIDERS_ACCEPTANCE.md)；真实邮件、前后端完整联调及 I 阶段横切验收仍待完成。
 
 ### 阶段 A 验收与评审修复
 

@@ -13,6 +13,8 @@ python -m autumn_backend.workers
 
 默认装配文件、人工确认的数据库动作、取消、索引失效清理和会话派生摘要清理。没有配置真实模型、Embedding 或邮件适配器时，其余任务保持排队。不会伪造回复、向量或邮件发送成功。
 
+后续已补齐真实 AI 装配：配置百炼后注册知识任务，配置 DeepSeek、百炼和已初始化的 PostgreSQL saver 后注册 Run 任务；Tavily 配置后提供站长联网工具。缺少必要的嵌入端口或检查点时模型 Worker 启动失败，不能提供伪造回复。具体配置和验收边界见 [PROVIDERS_ACCEPTANCE.md](PROVIDERS_ACCEPTANCE.md)。邮件仍未接入。
+
 完整 Agent 工厂通过可信本地 `--factory module:factory` 指定，工厂是返回 Worker 的异步上下文管理器。它负责端口连接的生命周期，并调用 `workers.bootstrap.configured_worker(uows, storage, knowledge=..., model=..., saver=...)`；model 必须同时配置 knowledge 和持久 saver。这个入口不接受 HTTP 或模型传入的模块路径。
 
 官方 PostgreSQL saver 在独立 `autumn_checkpoints` schema 保存框架表，应用 Alembic 仍管理 public schema 的 28 张业务表。首次使用需单独、显式执行：
@@ -87,4 +89,4 @@ Worker 在领取前、之后每约 60 秒运行一次有界收敛；单个任务
 
 H 的 14 项基础流程与 5 项受影响 Agent 流程集中核对，覆盖领取过滤、续租失效、崩溃回收、文件验证恢复、索引公开投影、确认动作、账本稳定键、取消、对账幂等、额度保留与待删文件重试。仅使用 5442 独立 PostgreSQL、确定性模型/嵌入端口和实际 LangGraph/Postgres saver；不请求付费供应商或邮件。
 
-每个 H 节点本地提交，未推送或部署。真实模型/搜索/邮件适配器及后续 CI、可观测性和横切验收仍待后续开发。
+每个 H 节点本地提交，未推送或部署。H 阶段本身没有请求真实供应商；后续已完成真实模型/嵌入/搜索适配与有限基础验收，见 [PROVIDERS_ACCEPTANCE.md](PROVIDERS_ACCEPTANCE.md)。邮件适配器及后续 CI、可观测性和横切验收仍待开发。

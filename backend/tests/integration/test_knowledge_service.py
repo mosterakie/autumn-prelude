@@ -58,6 +58,37 @@ async def build(e_case, service, publication=None):
     return await service.build_index(e_case.owner, job.id, job.lease_token)
 
 
+async def test_index_batches_each_have_an_independent_ledger(e_case: ServiceCase):
+    class Batched(Embeddings):
+        batch_size = 2
+
+        def __init__(self):
+            super().__init__()
+            self.keys = []
+
+        async def embed(self, texts, *, external_idempotency_key):
+            assert len(texts) <= self.batch_size
+            self.keys.append(external_idempotency_key)
+            return await super().embed(texts, external_idempotency_key=external_idempotency_key)
+
+    from sqlalchemy import select
+
+    from autumn_backend.db.enums import ProviderCallStatus
+    from autumn_backend.db.models import ProviderCall
+
+    embedder = Batched()
+    service = KnowledgeService(e_case.uows, service_for(e_case).storage, embedder)
+    await build(e_case, service)
+    assert len(set(embedder.keys)) == 2 and len(embedder.inputs) == 3
+    async with e_case.uows() as uow:
+        calls = (
+            await uow.session.scalars(select(ProviderCall).where(ProviderCall.provider == "test"))
+        ).all()
+        assert len(calls) == 2 and all(
+            call.status is ProviderCallStatus.SUCCEEDED for call in calls
+        )
+
+
 async def test_private_public_indexes_and_current_citation(e_case: ServiceCase) -> None:
     service = service_for(e_case)
     await build(e_case, service)
@@ -86,7 +117,10 @@ async def test_private_public_indexes_and_current_citation(e_case: ServiceCase) 
         )
     with pytest.raises(NotFoundError):
         await service.citation(e_case.member, public.id, citation.id)
-    assert await service.retrieve(e_case.member, public.id, "正文") == ()
+    # H7 起同一逻辑外部调用禁止自动重放；新检索仍必须看到撤回后的当前范围。
+    with pytest.raises(ConflictError):
+        await service.retrieve(e_case.member, public.id, "正文")
+    assert await service.retrieve(e_case.member, public.id, "撤回后的正文") == ()
 
 
 async def test_document_web_ingest_and_no_ocr(e_case: ServiceCase) -> None:

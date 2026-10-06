@@ -49,10 +49,11 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="AUTUMN_",
-        env_file=BACKEND_ROOT / ".env",
+        env_file=(BACKEND_ROOT / ".env", BACKEND_ROOT / ".env.providers.local"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        hide_input_in_errors=True,
     )
 
     # ------------------------------------------------------------- 运行模式 --
@@ -121,12 +122,15 @@ class Settings(BaseSettings):
         return value
 
     # ------------------------------------------------------------- 外部依赖 --
-    # A1 只登记配置，适配器实现留给 providers / storage 阶段。
-    llm_base_url: str | None = None
+    llm_base_url: str = "https://api.deepseek.com"
     llm_api_key: SecretStr | None = None
+    llm_model: str = "deepseek-flash"
     search_api_key: SecretStr | None = None
     embedding_base_url: str | None = None
     embedding_api_key: SecretStr | None = None
+    embedding_model: str = "text-embedding-v4"
+    provider_timeout_seconds: float = Field(default=45, gt=0, le=90)
+    checkpoint_schema: str = "autumn_checkpoints"
     storage_root: Path = BACKEND_ROOT / "var" / "storage"
 
     # -------------------------------------------------------------- 校验 ----

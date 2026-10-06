@@ -105,6 +105,7 @@ class AgentRuntime:
         outcome: Outcome | None = None
         accounted = monotonic()
         phase = "authorize"
+        completed_tools: list[dict[str, Any]] = []
 
         def elapsed() -> int:
             return max(0, int((monotonic() - accounted) * 1000))
@@ -162,6 +163,7 @@ class AgentRuntime:
                 sources=context.sources,
                 tools=self.tools.schemas(ticket),
                 completed_actions=context.actions,
+                completed_tools=completed_tools,
             )
             measured = monotonic()
             record = await self.service.reserve(
@@ -217,6 +219,14 @@ class AgentRuntime:
                     action_id=item.action_id,
                 )
                 return {"route": "stop"}
+            completed_tools.append(
+                {
+                    "step": state["step"],
+                    "name": plan.call.name,
+                    "status": "succeeded",
+                    "source_ids": [str(source.id) for source in item.sources],
+                }
+            )
             return {"route": "plan"}
 
         async def wait(state: GraphState) -> dict[str, Any]:

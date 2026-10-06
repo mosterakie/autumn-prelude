@@ -14,7 +14,7 @@ from tests.integration.test_knowledge_service import service_for
 pytestmark = pytest.mark.integration
 
 
-async def accepted_job(e_case: ServiceCase, *, owner=False):
+async def accepted_job(e_case: ServiceCase, *, owner=False, message="请根据获准资料回答"):
     actor = e_case.owner if owner else e_case.member
     async with e_case.uows() as uow:
         conversation = await uow.repositories.conversations.create(
@@ -26,7 +26,7 @@ async def accepted_job(e_case: ServiceCase, *, owner=False):
             conversation_id=conversation.id,
             client_message_id=uuid4(),
             idempotency_key=uuid4().hex,
-            message="请根据获准资料回答",
+            message=message,
             resource_ids=(e_case.resource_id,),
         ),
     )

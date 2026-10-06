@@ -1,15 +1,17 @@
 """默认运行已配置的任务；真实模型/Embedding 由可信工厂注入。"""
 
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
+from autumn_backend.agent.checkpoints import postgres_saver
 from autumn_backend.agent.contracts import ModelDriver
 from autumn_backend.config import get_settings
 from autumn_backend.db.session import UnitOfWorkFactory, create_engine, create_session_factory
 from autumn_backend.jobs.queue import Queue
+from autumn_backend.providers.configured import providers
 from autumn_backend.services.action_execution import ActionExecutionService
 from autumn_backend.services.conversation_cleanup import ConversationCleanupService
 from autumn_backend.services.knowledge import KnowledgeService
@@ -17,6 +19,7 @@ from autumn_backend.services.maintenance import MaintenanceService
 from autumn_backend.services.run_cancellation import RunCancellationService
 from autumn_backend.services.storage import StorageService
 from autumn_backend.services.tasks import TaskService
+from autumn_backend.services.web_search import WebSearchService
 from autumn_backend.storage.local import LocalObjectStore
 from autumn_backend.workers.core import Worker
 from autumn_backend.workers.handlers import (
@@ -36,6 +39,7 @@ def configured_worker(
     knowledge: KnowledgeService | None = None,
     model: ModelDriver | None = None,
     saver: BaseCheckpointSaver[Any] | None = None,
+    web_search: WebSearchService | None = None,
 ) -> Worker:
     tasks = TaskService(uows)
     handlers = {**storage_handlers(storage, tasks), **cleanup_handlers(uows)}
@@ -54,7 +58,9 @@ def configured_worker(
     if model is not None:
         if knowledge is None or saver is None:
             raise ValueError("运行任务必须配置知识服务和持久检查点")
-        handlers.update(run_handlers(agent_runtime(uows, knowledge, model, saver)))
+        handlers.update(
+            run_handlers(agent_runtime(uows, knowledge, model, saver, web_search=web_search))
+        )
     return Worker(
         Queue(uows), Registry(handlers), tasks.failure, maintenance=MaintenanceService(uows).tick
     )
@@ -67,6 +73,31 @@ async def worker() -> AsyncIterator[Worker]:
     try:
         uows = UnitOfWorkFactory(create_session_factory(engine))
         storage = StorageService(uows, LocalObjectStore(settings.storage_root))
-        yield configured_worker(uows, storage)
+        async with AsyncExitStack() as stack:
+            configured = await stack.enter_async_context(providers(settings))
+            knowledge = (
+                KnowledgeService(uows, storage, configured.embedder)
+                if configured.embedder
+                else None
+            )
+            web_search = WebSearchService(uows, configured.search) if configured.search else None
+            saver = None
+            if configured.model is not None:
+                if knowledge is None:
+                    raise ValueError("启用模型前必须配置嵌入服务")
+                saver = await stack.enter_async_context(
+                    postgres_saver(
+                        settings.async_database_url,
+                        schema=settings.checkpoint_schema,
+                    )
+                )
+            yield configured_worker(
+                uows,
+                storage,
+                knowledge=knowledge,
+                model=configured.model,
+                saver=saver,
+                web_search=web_search,
+            )
     finally:
         await engine.dispose()

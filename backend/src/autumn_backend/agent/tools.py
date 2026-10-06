@@ -13,6 +13,7 @@ from autumn_backend.services.actions import ActionService, Command
 from autumn_backend.services.context import TaskFence
 from autumn_backend.services.knowledge import Citation, KnowledgeService
 from autumn_backend.services.runtime import RuntimeService, RuntimeTicket
+from autumn_backend.services.web_search import WebSearchService
 
 
 class Input(BaseModel):
@@ -28,8 +29,13 @@ class Proposal(Input):
     command: Command = Field(discriminator="target_type")
 
 
+class WebSearch(Input):
+    query: str = Field(min_length=1, max_length=8000)
+    limit: int = Field(default=3, ge=1, le=5)
+
+
 class ToolCall(Input):
-    name: Literal["search_knowledge", "propose_action"]
+    name: Literal["search_knowledge", "search_web", "propose_action"]
     arguments: dict[str, Any]
 
 
@@ -41,9 +47,15 @@ class ToolResult:
 
 class Tools:
     def __init__(
-        self, runtime: RuntimeService, knowledge: KnowledgeService, actions: ActionService
+        self,
+        runtime: RuntimeService,
+        knowledge: KnowledgeService,
+        actions: ActionService,
+        *,
+        web_search: WebSearchService | None = None,
     ) -> None:
         self.runtime, self.knowledge, self.actions = runtime, knowledge, actions
+        self.web_search = web_search
 
     def schemas(self, ticket: RuntimeTicket) -> tuple[dict[str, Any], ...]:
         result = [
@@ -54,6 +66,18 @@ class Tools:
             }
         ]
         if ticket.actor.role is ActorRole.OWNER and ticket.actor.step_up_expires_at is not None:
+            if (
+                self.web_search is not None
+                and ticket.mode == "owner"
+                and ticket.search_mode in ("web", "auto")
+            ):
+                result.append(
+                    {
+                        "name": "search_web",
+                        "description": "联网搜索并登记引用，只用于已验证站长的联网运行。",
+                        "parameters": WebSearch.model_json_schema(),
+                    }
+                )
             result.append(
                 {
                     "name": "propose_action",
@@ -74,6 +98,20 @@ class Tools:
                 search = Search.model_validate_json(json.dumps(call.arguments))
                 result = await self.knowledge.retrieve(
                     ticket.actor, ticket.run_id, search.query, limit=search.limit, fence=fence
+                )
+                await self.runtime.guard(ticket)
+                return ToolResult(sources=result)
+            if call.name == "search_web":
+                search_web = WebSearch.model_validate_json(json.dumps(call.arguments))
+                if self.web_search is None:
+                    raise InvalidInputError("联网工具未配置")
+                result = await self.web_search.search(
+                    ticket.actor,
+                    ticket.run_id,
+                    search_web.query,
+                    limit=search_web.limit,
+                    fence=fence,
+                    step=step,
                 )
                 await self.runtime.guard(ticket)
                 return ToolResult(sources=result)

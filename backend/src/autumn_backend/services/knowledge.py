@@ -460,21 +460,34 @@ class KnowledgeService:
                 tuple(part for part in parts if part.locator.get("field") != "body") + file_parts
             )
         parts = chunks(parts)
-        async with self._uows() as uow:
-            await self._index_input(uow, actor, job_id, token)
-            call = await self._prepare_external(
-                uow,
-                provider=self.embedder.provider,
-                model=self.embedder.model,
-                purpose=ProviderCallPurpose.EMBEDDING,
-                key=f"index:{job_id}:embedding",
-                job_id=job_id,
+        batch_size = getattr(self.embedder, "batch_size", 10)
+        if type(batch_size) is not int or not 1 <= batch_size <= 10 or not parts:
+            raise InvalidInputError("嵌入批次配置或索引文本无效")
+        vectors = []
+        for offset in range(0, len(parts), batch_size):
+            batch = parts[offset : offset + batch_size]
+            async with self._uows() as uow:
+                await self._index_input(uow, actor, job_id, token)
+                call = await self._prepare_external(
+                    uow,
+                    provider=self.embedder.provider,
+                    model=self.embedder.model,
+                    purpose=ProviderCallPurpose.EMBEDDING,
+                    key=f"index:{job_id}:embedding"
+                    + (f":batch{offset // batch_size}" if len(parts) > batch_size else ""),
+                    job_id=job_id,
+                )
+                call_id, call_key = call.id, external_idempotency_key(call.logical_call_key)
+            require_outside_uow()
+            batch_vectors = await self.embedder.embed(
+                tuple(part.text for part in batch), external_idempotency_key=call_key
             )
-            call_id, call_key = call.id, external_idempotency_key(call.logical_call_key)
-        require_outside_uow()
-        vectors = await self.embedder.embed(
-            tuple(part.text for part in parts), external_idempotency_key=call_key
-        )
+            validate_vectors(batch_vectors, len(batch))
+            vectors.extend(batch_vectors)
+            if offset + batch_size < len(parts):
+                async with self._uows() as uow:
+                    await self._index_input(uow, actor, job_id, token)
+                    await uow.repositories.provider_calls.settle_succeeded(call_id)
         validate_vectors(vectors, len(parts))
         digest = hashlib.sha256(repr(parts).encode()).hexdigest()
         async with self._uows() as uow:

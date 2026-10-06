@@ -29,7 +29,10 @@ async def start(factory: Factory, *, once: bool) -> None:
 
 
 async def setup_checkpoints() -> None:
-    async with postgres_saver(get_settings().async_database_url, initialize=True):
+    settings = get_settings()
+    async with postgres_saver(
+        settings.async_database_url, schema=settings.checkpoint_schema, initialize=True
+    ):
         pass
 
 

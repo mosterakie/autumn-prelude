@@ -18,6 +18,7 @@ from autumn_backend.services.knowledge import KnowledgeService
 from autumn_backend.services.runtime import RuntimeService
 from autumn_backend.services.storage import StorageService
 from autumn_backend.services.tasks import TaskService
+from autumn_backend.services.web_search import WebSearchService
 from autumn_backend.workers.registry import Handler
 
 
@@ -57,12 +58,14 @@ def agent_runtime(
     knowledge: KnowledgeService,
     model: ModelDriver,
     saver: BaseCheckpointSaver[Any],
+    *,
+    web_search: WebSearchService | None = None,
 ) -> AgentRuntime:
     service = RuntimeService(uows)
     return AgentRuntime(
         service,
         ContextLoader(service, knowledge),
-        Tools(service, knowledge, ActionService(uows)),
+        Tools(service, knowledge, ActionService(uows), web_search=web_search),
         ExecutionService(uows),
         InputWaitService(uows),
         model,
