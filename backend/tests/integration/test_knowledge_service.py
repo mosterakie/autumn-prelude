@@ -31,8 +31,9 @@ class Embeddings:
     def __init__(self):
         self.inputs = []
 
-    async def embed(self, texts):
+    async def embed(self, texts, *, external_idempotency_key):
         assert active_uows.get() == 0
+        assert external_idempotency_key.startswith("autumn-")
         self.inputs.extend(texts)
         return [[1.0] + [0.0] * 1023 for _ in texts]
 

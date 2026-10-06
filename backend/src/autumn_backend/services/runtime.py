@@ -376,7 +376,6 @@ class RuntimeService:
                 select(ProviderCall.id)
                 .where(
                     ProviderCall.run_id == run.id,
-                    ProviderCall.purpose.in_((ProviderCallPurpose.CHAT, ProviderCallPurpose.TOOL)),
                     ProviderCall.status.in_(
                         (ProviderCallStatus.DISPATCHED, ProviderCallStatus.UNKNOWN)
                     ),

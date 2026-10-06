@@ -57,6 +57,22 @@ class TaskService:
             await RuntimeService(self.uows).stop(job.id, job.token, code=code)
             return
         async with self.uows() as uow:
+            await uow.repositories.jobs.require_lease(job.id, job.token)
+            calls = (
+                await uow.session.scalars(
+                    select(ProviderCall)
+                    .where(
+                        ProviderCall.job_id == job.id,
+                        ProviderCall.status == ProviderCallStatus.DISPATCHED,
+                    )
+                    .order_by(ProviderCall.id)
+                    .with_for_update()
+                )
+            ).all()
+            for call in calls:
+                await uow.repositories.provider_calls.settle_unknown(
+                    call.id, error_code="HANDLER_OUTCOME_UNKNOWN"
+                )
             if (
                 isinstance(error, AuthorizationError)
                 and error.decision.code

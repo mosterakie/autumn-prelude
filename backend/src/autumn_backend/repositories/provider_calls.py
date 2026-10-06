@@ -85,7 +85,7 @@ class ProviderCallRepository(ControlledMutableRepository[ProviderCall]):
             await self.session.execute(
                 select(ProviderCall)
                 .where(ProviderCall.logical_call_key == logical_call_key)
-                .order_by(ProviderCall.attempt_no)
+                .order_by(ProviderCall.attempt_no.desc())
                 .limit(1)
             )
         ).scalar_one_or_none()
@@ -102,6 +102,9 @@ class ProviderCallRepository(ControlledMutableRepository[ProviderCall]):
             != identity
         ):
             raise ConflictError("逻辑调用身份已用于不同操作")
+        if previous is not None and attempt_no != previous.attempt_no:
+            if attempt_no != previous.attempt_no + 1 or previous.status is not Status.FAILED:
+                raise ConflictError("只有已确定失败的调用可创建下一次物理尝试")
         with database_errors():
             call = (
                 await self.session.execute(

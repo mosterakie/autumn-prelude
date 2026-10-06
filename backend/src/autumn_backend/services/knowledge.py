@@ -13,6 +13,8 @@ from sqlalchemy import select
 from autumn_backend.db.enums import (
     FileObjectStatus,
     MessageStatus,
+    ProviderCallPurpose,
+    ProviderCallStatus,
     ResourceKind,
     RunSourceType,
     RunStatus,
@@ -23,6 +25,7 @@ from autumn_backend.db.models import (
     KnowledgeChunk,
     Memory,
     Message,
+    ProviderCall,
     Resource,
     ResourceVersion,
     Run,
@@ -44,6 +47,7 @@ from autumn_backend.policies.context import source_decision
 from autumn_backend.policies.facts import ConversationMode, Operation, TargetKind
 from autumn_backend.repositories.jobs import JobSpec
 from autumn_backend.repositories.knowledge import Hit
+from autumn_backend.repositories.provider_calls import external_idempotency_key
 from autumn_backend.repositories.resources import RevisionDraft
 from autumn_backend.services.access import (
     AuthorizationError,
@@ -59,7 +63,9 @@ class Embedder(Protocol):
     provider: str
     model: str
 
-    async def embed(self, texts: tuple[str, ...]) -> list[list[float]]: ...
+    async def embed(
+        self, texts: tuple[str, ...], *, external_idempotency_key: str
+    ) -> list[list[float]]: ...
 
 
 class Fetcher(Protocol):
@@ -67,7 +73,12 @@ class Fetcher(Protocol):
 
 
 class Reranker(Protocol):
-    async def rank(self, query: str, hits: tuple[Hit, ...]) -> tuple[UUID, ...]: ...
+    provider: str
+    model: str
+
+    async def rank(
+        self, query: str, hits: tuple[Hit, ...], *, external_idempotency_key: str
+    ) -> tuple[UUID, ...]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +107,45 @@ def validate_vectors(vectors: list[list[float]], count: int) -> None:
 
 
 class KnowledgeService:
+    @staticmethod
+    async def _prepare_external(
+        uow: UnitOfWork,
+        *,
+        provider: str,
+        model: str,
+        purpose: ProviderCallPurpose,
+        key: str,
+        job_id: UUID | None = None,
+        run_id: UUID | None = None,
+    ) -> ProviderCall:
+        unsettled = await uow.session.scalar(
+            select(ProviderCall.id)
+            .where(
+                ProviderCall.run_id == run_id
+                if run_id is not None
+                else ProviderCall.job_id == job_id,
+                ProviderCall.status.in_(
+                    (ProviderCallStatus.DISPATCHED, ProviderCallStatus.UNKNOWN)
+                ),
+            )
+            .limit(1)
+        )
+        if unsettled is not None:
+            raise ConflictError("当前运行/任务的供应商结果尚未确定")
+        call = (
+            await uow.repositories.provider_calls.prepare(
+                provider=provider,
+                model=model,
+                purpose=purpose,
+                logical_call_key=key,
+                job_id=job_id,
+                run_id=run_id,
+            )
+        ).record
+        if call.status is not ProviderCallStatus.PREPARED:
+            raise ConflictError("既有外部调用不能自动重放")
+        return await uow.repositories.provider_calls.mark_dispatched(call.id)
+
     def __init__(
         self,
         uows: UnitOfWorkFactory,
@@ -410,8 +460,21 @@ class KnowledgeService:
                 tuple(part for part in parts if part.locator.get("field") != "body") + file_parts
             )
         parts = chunks(parts)
+        async with self._uows() as uow:
+            await self._index_input(uow, actor, job_id, token)
+            call = await self._prepare_external(
+                uow,
+                provider=self.embedder.provider,
+                model=self.embedder.model,
+                purpose=ProviderCallPurpose.EMBEDDING,
+                key=f"index:{job_id}:embedding",
+                job_id=job_id,
+            )
+            call_id, call_key = call.id, external_idempotency_key(call.logical_call_key)
         require_outside_uow()
-        vectors = await self.embedder.embed(tuple(part.text for part in parts))
+        vectors = await self.embedder.embed(
+            tuple(part.text for part in parts), external_idempotency_key=call_key
+        )
         validate_vectors(vectors, len(parts))
         digest = hashlib.sha256(repr(parts).encode()).hexdigest()
         async with self._uows() as uow:
@@ -430,6 +493,7 @@ class KnowledgeService:
                 parts=parts,
                 vectors=vectors,
             )
+            await uow.repositories.provider_calls.settle_succeeded(call_id)
             await uow.repositories.jobs.finish(job_id, token, result={"index_id": str(index.id)})
             await self._owner(uow, actor, resource.id)
             return index.id
@@ -505,8 +569,20 @@ class KnowledgeService:
                 await run_facts(uow, actor, run_id, Operation.CONTINUE_RUN)
                 await require_task(uow, actor, run, fence)
             version = run.version
+            # 没有 job 的直接服务调用由 Run 当前版本/代际 + 稳定逻辑键仲裁。
+            logical = f"retrieval:{run.id}:g{run.execution_generation}:v{version}:{hashlib.sha256(query.encode()).hexdigest()}"
+            call = await self._prepare_external(
+                uow,
+                provider=self.embedder.provider,
+                model=self.embedder.model,
+                purpose=ProviderCallPurpose.EMBEDDING,
+                key=f"{logical}:embedding",
+                run_id=run.id,
+                job_id=fence.job_id if fence else None,
+            )
+            call_id, call_key = call.id, external_idempotency_key(call.logical_call_key)
         require_outside_uow()
-        vectors = await self.embedder.embed((query,))
+        vectors = await self.embedder.embed((query,), external_idempotency_key=call_key)
         validate_vectors(vectors, 1)
         async with self._uows() as uow:
             run, allowed = await self._search_scope(uow, actor, run_id)
@@ -515,12 +591,26 @@ class KnowledgeService:
                 await require_task(uow, actor, run, fence)
             if run.version != version:
                 raise OptimisticLockError("旧检索执行已失效")
+            await uow.repositories.provider_calls.settle_succeeded(call_id)
             hits = await uow.repositories.knowledge.nearest(
                 allowed, vectors[0], limit=min(40, limit * 3) if self.reranker else limit
             )
+            rerank_call = None
+            if self.reranker is not None and hits:
+                rerank_call = await self._prepare_external(
+                    uow,
+                    provider=self.reranker.provider,
+                    model=self.reranker.model,
+                    purpose=ProviderCallPurpose.RERANK,
+                    key=f"{logical}:rerank",
+                    run_id=run.id,
+                    job_id=fence.job_id if fence else None,
+                )
+                rerank_call_id = rerank_call.id
+                rerank_key = external_idempotency_key(rerank_call.logical_call_key)
         if self.reranker is not None and hits:
             require_outside_uow()
-            order = await self.reranker.rank(query, hits)
+            order = await self.reranker.rank(query, hits, external_idempotency_key=rerank_key)
             by_id = {hit.chunk_id: hit for hit in hits}
             if len(order) != len(set(order)) or any(item not in by_id for item in order):
                 raise InvalidInputError("重排返回了无效片段")
@@ -553,6 +643,8 @@ class KnowledgeService:
             if fence is not None:
                 await run_facts(uow, actor, run_id, Operation.CONTINUE_RUN)
                 await require_task(uow, actor, run, fence)
+            if rerank_call is not None:
+                await uow.repositories.provider_calls.settle_succeeded(rerank_call_id)
             return tuple(result)
 
     async def capture_dependencies(
