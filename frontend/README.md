@@ -2,6 +2,8 @@
 
 Next.js App Router、TypeScript、Tailwind CSS 与 TanStack Query。依据 [前端设计](../docs/architecture/frontend.md) 和 [接口契约](../docs/architecture/api-contract.md) 实现；FastAPI 业务与 Agent 位于独立的 backend 目录。
 
+项目完整状态、前端与已注册接口对应关系、运行配置和研究资料见 [研究归档](../docs/archive/README.md)。知识库/设置等页面有部分计划 HTTP 尚未交付，不能用 demo 体验代替真实接口验收。
+
 ## 启动
 
 Node.js 22.12+，建议 24 LTS。

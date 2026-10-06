@@ -5,3 +5,8 @@
 *.webp binary
 *.pdf binary
 *.docx binary
+# Preserve original research inputs byte-for-byte, including their whitespace.
+docs/archive/history/* -text
+docs/archive/history/*.md whitespace=-blank-at-eol,-blank-at-eof,cr-at-eol
+docs/archive/history/README.md text eol=lf whitespace=blank-at-eol,blank-at-eof,space-before-tab
+docs/archive/history/source-manifest.json text eol=lf

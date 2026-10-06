@@ -1,23 +1,25 @@
 # 秋序后端与 Agent 设计
 
+归档更新：2026-10-06。本文包含目标设计；已实现范围、当前五个工具和缺失 HTTP 入口见 [研究归档](../archive/README.md)。原始设计演进保留在归档历史材料中。
+
 版本：v1.0。对应[接口契约](api-contract.md)与[数据库设计](database.md)。
 
 ## 1 结构与模块
 
 采用 FastAPI、Pydantic、SQLAlchemy 2 和 Alembic。后端是模块化单体，Agent、HTTP API 和 worker 共用代码。业务模块不依赖角色外观或前端框架。
 
-| 模块 | 职责 |
-| --- | --- |
-| api | 输入输出模型、状态码、HTTP 与 SSE |
-| auth | 邮箱密码、会话、TOTP、用户状态 |
-| policies | 对象归属、公开版本、工具与额度授权 |
-| services | 文章、收藏、入库、公开设置、审核、保存策略 |
-| agent | 工作流、提示词、工具编排、上下文和恢复 |
-| providers | DeepSeek、Tavily、百炼和邮件适配 |
-| repositories | 参数化数据库访问和事务 |
-| jobs | PostgreSQL 持久队列、租约、重试、取消 |
-| storage | 原文件与快照的受控读写 |
-| observability | 脱敏日志、调用用量、操作审计 |
+| 模块          | 职责                                       |
+| ------------- | ------------------------------------------ |
+| api           | 输入输出模型、状态码、HTTP 与 SSE          |
+| auth          | 邮箱密码、会话、TOTP、用户状态             |
+| policies      | 对象归属、公开版本、工具与额度授权         |
+| services      | 文章、收藏、入库、公开设置、审核、保存策略 |
+| agent         | 工作流、提示词、工具编排、上下文和恢复     |
+| providers     | DeepSeek、Tavily、百炼和邮件适配           |
+| repositories  | 参数化数据库访问和事务                     |
+| jobs          | PostgreSQL 持久队列、租约、重试、取消      |
+| storage       | 原文件与快照的受控读写                     |
+| observability | 脱敏日志、调用用量、操作审计               |
 
 HTTP 路由和 Agent 工具都调用 services。服务方法接收服务端生成的 ActorContext，包括 user_id、role、auth_session_id、step_up_expires_at 和当前能力；模型只能提供业务参数，不能构造 ActorContext。
 
@@ -29,7 +31,7 @@ HTTP 路由和 Agent 工具都调用 services。服务方法接收服务端生�
 
 使用高熵随机会话令牌，数据库只存令牌哈希，浏览器通过 HttpOnly Cookie 携带。正式环境 Cookie 使用 Secure、SameSite=Lax、Path=/ 和 __Host- 前缀；本地非 HTTPS 调试使用独立开发 Cookie 名，不降低正式配置。
 
-设计默认值：会话最长 7 天、闲置 24 小时失效；TOTP 升级权限 15 分钟；邮箱验证与密码重置链接有效期分别为 24 小时和 30 分钟。均可配置。这些是安全凭据时效，不改变业务数据永久保存规则。
+当前代码默认值：会话最长 720 小时（30 天）、闲置 24 小时失效；TOTP 升级权限 15 分钟；邮箱验证与密码重置链接有效期分别为 24 小时和 1 小时。会话/升级期限可配置，令牌用途时效以认证实现为准。这些是安全凭据时效，不改变业务数据永久保存规则。
 
 认证成功与权限升级时轮换会话令牌。退出、密码重置和禁用账号撤销相关会话。已登录用户在 /api/auth/me 取得 CSRF token，保存在内存；所有已认证写请求必须同时校验 CSRF token 与可信 Origin。未登录的注册、登录、验证和重置入口严格校验 Origin、JSON 类型与限速，错误信息不泄露邮箱是否存在。
 
@@ -41,18 +43,18 @@ Cookie 属性、会话轮换与有效期设计参考 [OWASP 会话管理](https:
 
 ## 3 权限与数据边界
 
-| 主体 | 允许操作 |
-| --- | --- |
-| anonymous | 读取现行公开版本和已审核留言 |
-| member | anonymous 能力、本人会话、通过验证后留言；冷却结束且有额度时使用 AI |
-| owner 未升级 | 本人的普通模式能力，无法读私人工作台 |
-| owner 已升级 | 本人私人资料、管理、联网搜索、受限工具 |
+| 主体         | 允许操作                                                            |
+| ------------ | ------------------------------------------------------------------- |
+| anonymous    | 读取现行公开版本和已审核留言                                        |
+| member       | anonymous 能力、本人会话、通过验证后留言；冷却结束且有额度时使用 AI |
+| owner 未升级 | 本人的普通模式能力，无法读私人工作台                                |
+| owner 已升级 | 本人私人资料、管理、联网搜索、受限工具                              |
 
 站长身份不自动获得其他用户的聊天内容。审核模块只读取需要处理的留言和账号管理元数据。
 
 私密对象和不存在对象对无权限者返回一致的 404；已登录但需要站长升级验证时返回 403 STEP_UP_REQUIRED。每次获取会话、任务、事件、引用、文件和操作结果都校验归属。权限在工具入口与提交事务时各检查一次，不能只检查 /ask。
 
-首版隔离由 policies 加 repositories 的强制范围查询和跨账号测试保证。数据库运行角色无 DDL、无超级用户权限。RLS 可作为后续额外防线；若启用，必须覆盖 worker 和连接池上下文，并注意表所有者与 BYPASSRLS 可绕过策略。[PostgreSQL RLS](https://www.postgresql.org/docs/current/ddl-rowsecurity.html)
+首版隔离由 policies 加 repositories 的强制范围查询和跨账号测试保证。生产目标是数据库运行角色无 DDL、无超级用户权限；本地开发不等于已落实生产角色隔离。RLS 可作为后续额外防线；若启用，必须覆盖 worker 和连接池上下文，并注意表所有者与 BYPASSRLS 可绕过策略。[PostgreSQL RLS](https://www.postgresql.org/docs/current/ddl-rowsecurity.html)
 
 ## 4 内容与发布流程
 
@@ -60,10 +62,10 @@ resources 表代表文章、收藏、文档或网页资料；resource_versions �
 
 更新原稿创建新 resource_version 并递增 resources.version，不自动替换公开版本。发布执行如下事务：
 
-1. 重新鉴权、锁定资源，核对 expected_version 与所选 revision_id。
+1. 重新鉴权、锁定资源，分别核对 expected_version、expected_acl_version 与所选 revision_id。
 2. 根据类型白名单生成公开标题、正文、URL 与标签；不复制未选择的私人备注。
 3. 撤销旧 publication，插入新 publication；全字段变更通过新版本完成。
-4. 增加资源 version、acl_version 和全站 content_acl_epoch。
+4. 增加资源 acl_version 和全站 content_acl_epoch；公开决定不伪造私人原稿 version 变化。
 5. 同事务写入 action 结果、审计及公开索引作业。
 6. 提交后返回 public_url 与实际公开字段；索引未完成时说明公开 AI 检索尚未就绪。
 
@@ -98,28 +100,30 @@ D 阶段的纯判定与执行边界见 [权限契约](../../backend/POLICY_CONTR
 变化或任何直接/间接来源失权后，旧执行上下文返回 ACL_CONTEXT_INVALIDATED，
 停止继续生成或输出。失效通知使用接口既有 source.invalidated / scope.changed，
 不增加 run.invalidated 事件。需要继续时先重新鉴权和重建全部上下文，再进入新的
-执行代际；G 已实现持久代际与租约/权限的联合提交校验，H 接入 Worker 调度。
+执行代际；G/H 已实现持久代际、Worker 调度与租约/权限的联合提交校验。
 最小运行器、默认预算、已注册工具和后续接入边界见 [G 阶段说明](../../backend/G_STAGE_AGENT.md)。
 
 首版限制每轮工具调用数、运行时长、输入与输出 token，参数可配置。没有获准工具时不伪造执行结果；角色措辞与实际结果分开生成。
 
 ### 工具清单
 
-| 工具 | 可用身份 | 输入与动作 |
-| --- | --- | --- |
-| search_public_knowledge | member、owner | 问题；查询获准公开投影 |
-| search_private_knowledge | owner 已升级 | 问题、资源范围；检索本人资料 |
-| search_web | owner 已升级 | 查询和范围；调用 Tavily |
-| add_bookmark | owner 已升级 | URL、标题、标签、私密备注 |
-| ingest_url | owner 已升级 | URL、是否同时收藏；创建后台作业 |
-| create_article_draft | owner 已升级 | 标题、正文与来源 |
-| update_resource | owner 已升级 | 精确对象 ID、字段变更、expected_version |
-| publish_resource | owner 已升级 | revision_id、公开字段与权限开关 |
-| revoke_publication | owner 已升级 | 对象 ID 与 expected_version |
-| change_retention | owner 已升级 | 数据范围、期限、是否影响历史 |
-| change_ai_limits | owner 已升级 | 冷却与额度、expected_version、明确的生效范围 |
-| remember_preference | owner 已升级 | 明确要求记住的内容与来源 |
-| inspect_action | 操作本人且权限有效 | action_id，读取真实状态 |
+下表为目标业务能力清单，名称不等于当前注册工具名。当前只注册 `search_knowledge`、`search_web`、`propose_bookmark`、`propose_note`、`propose_action`；创建和管理均先生成固定预览，用户确认后由 Worker 执行。完整范围见 [Agent 与接口归档](../archive/02-architecture-and-flows.md)。
+
+| 工具                     | 可用身份           | 输入与动作                                   |
+| ------------------------ | ------------------ | -------------------------------------------- |
+| search_public_knowledge  | member、owner      | 问题；查询获准公开投影                       |
+| search_private_knowledge | owner 已升级       | 问题、资源范围；检索本人资料                 |
+| search_web               | owner 已升级       | 查询和范围；调用 Tavily                      |
+| add_bookmark             | owner 已升级       | URL、标题、标签、私密备注                    |
+| ingest_url               | owner 已升级       | URL、是否同时收藏；创建后台作业              |
+| create_article_draft     | owner 已升级       | 标题、正文与来源                             |
+| update_resource          | owner 已升级       | 精确对象 ID、字段变更、expected_version      |
+| publish_resource         | owner 已升级       | revision_id、公开字段与权限开关              |
+| revoke_publication       | owner 已升级       | 对象 ID 与 expected_version                  |
+| change_retention         | owner 已升级       | 数据范围、期限、是否影响历史                 |
+| change_ai_limits         | owner 已升级       | 冷却与额度、expected_version、明确的生效范围 |
+| remember_preference      | owner 已升级       | 明确要求记住的内容与来源                     |
+| inspect_action           | 操作本人且权限有效 | action_id，读取真实状态                      |
 
 工具不包含任意 shell、SQL、跨用户数据查询或秘密读取。普通用户粘贴 URL 不会触发联网。
 
@@ -127,7 +131,7 @@ D 阶段的纯判定与执行边界见 [权限契约](../../backend/POLICY_CONTR
 
 ### 执行与确认
 
-目标和结果明确的低影响指令直接执行。站长明确授权发布某个已存在版本及字段时，这条请求本身可作为授权证据。模型新生成内容、大范围公开、彻底清理或不明确对象先生成预览。
+目标设计允许明确低影响指令和页面明确撤回走直接服务入口。当前 Agent 写入统一采用 confirmed_preview，模型不能直接发布或确认；新内容、大范围公开、彻底清理或不明确对象必须给出具体可核对的影响。页面明确请求与 Agent 工具的授权入口不能混用。
 
 actions 存储目标 ID、操作类型、参数摘要、内容版本、授权来源、到期时间、结果 ID 与状态。确认只对这项具体变更有效；确认期间对象版本变化即要求重新预览。执行后修改动作定义必须建立新 action。
 
@@ -151,15 +155,15 @@ actions 存储目标 ID、操作类型、参数摘要、内容版本、授权来
 
 ### 扣次规则
 
-| 情况 | 处理 |
-| --- | --- |
-| 未登录、冷却、参数错误、无权限、额度满 | 不创建有效 run，不扣次 |
-| 已排队，供应商调用前取消或本地失败 | reservation 释放，不扣次 |
-| 首次进入模型供应商调用阶段 | reserved 转 charged，每个 run 只转换一次 |
-| 后续工具调用、断线重连、同 run 恢复 | 不重复扣问答次数，实际供应商调用另记 |
-| 调用结果不明、用户在调用后停止 | 保留已扣次数并记录实际状态 |
-| 确认是服务端或供应商故障 | 通过幂等补偿转 refunded；实际成本记录不删除 |
-| 用户要求重新生成 | 新的 ask 和 Idempotency-Key，按新请求处理 |
+| 情况                                   | 处理                                        |
+| -------------------------------------- | ------------------------------------------- |
+| 未登录、冷却、参数错误、无权限、额度满 | 不创建有效 run，不扣次                      |
+| 已排队，供应商调用前取消或本地失败     | reservation 释放，不扣次                    |
+| 首次进入模型供应商调用阶段             | reserved 转 charged，每个 run 只转换一次    |
+| 后续工具调用、断线重连、同 run 恢复    | 不重复扣问答次数，实际供应商调用另记        |
+| 调用结果不明、用户在调用后停止         | 保留已扣次数并记录实际状态                  |
+| 确认是服务端或供应商故障               | 通过幂等补偿转 refunded；实际成本记录不删除 |
+| 用户要求重新生成                       | 新的 ask 和 Idempotency-Key，按新请求处理   |
 
 进入供应商阶段前先写 dispatched 标记并计次。崩溃恢复遇到结果不明的已派发调用，不自动重复发送不可确认的请求。需要退款的情况由服务端错误分类或站长操作触发，不能由模型决定。
 

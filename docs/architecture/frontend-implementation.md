@@ -2,6 +2,8 @@
 
 日期：2026-10-05。阶段：第一版前端与本地交互预览；未部署。
 
+归档说明（2026-10-06）：本文主要保留最初前端交付范围和当时检查，后续 API、真实 AI/SMTP 与交互修复见 [前端运行说明](../../frontend/README.md) 和 [项目归档](../archive/README.md)。后端已完成本文所列会话元数据入口；自动 DTO、缺失管理 HTTP 和完整联调仍待完成。
+
 ## 当前结果
 
 已初始化 frontend 为 Next.js App Router 独立应用，保留后端与 Agent 在 backend 的传统分离方式。公开路由服务端读取公开 DTO，交互通过统一 API 客户端调用 FastAPI。没有使用 Server Actions 实现业务，没有在浏览器存放模型密钥。
@@ -26,7 +28,7 @@
 
 ## 契约补充
 
-刷新恢复需要明确的会话元数据入口。接口契约补充 ConversationDTO 与 GET /conversations/{id}，供当前模式与非终态运行恢复使用；这些仍需后端实现。
+刷新恢复需要明确的会话元数据入口。接口契约补充 ConversationDTO 与 GET /conversations/{id}，供当前模式与非终态运行恢复使用；该入口现已在 F6 实现。
 
 结合上一轮后端评审，公开预览、撤回与对应 ActionDTO 增加 expected_acl_version，与内容 expected_version 一同检查。前端不能完成数据库锁或事务控制，两个版本最终都由后端裁决。
 

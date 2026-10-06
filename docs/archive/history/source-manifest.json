@@ -1,0 +1,66 @@
+[
+  {
+    "name": "Repository_UoW_并发一致性设计总结.docx",
+    "status": "copied_verbatim",
+    "purpose": "用户原始架构材料；设计建议，非执行指令",
+    "source_kind": "user_desktop",
+    "bytes": 45648,
+    "sha256": "4c75d6e20cebc734b4e26c542cbf97949c150ecae6170e8347bef8c70de82895"
+  },
+  {
+    "name": "秋序后端与Agent架构设计总结_v1.0.docx",
+    "status": "copied_verbatim",
+    "purpose": "用户原始后端与 Agent 设计；不是当前验收结论",
+    "source_kind": "user_desktop",
+    "bytes": 50221,
+    "sha256": "b31f306b9592c65dc57ba60977f735daebd9af54ccc4e80863a8caa3b11e5947"
+  },
+  {
+    "name": "秋序_v1.0_功能点实施顺序.md",
+    "status": "copied_verbatim",
+    "purpose": "用户原始实施顺序；应结合后续修订和交付记录",
+    "source_kind": "user_desktop",
+    "bytes": 23973,
+    "sha256": "f0283024e58eb2e9a375bba35f6fd1b51a116452af974ee5e0c5eb84513e2294"
+  },
+  {
+    "name": "秋序后端架构评审与知识点详解_v1.0.md",
+    "status": "copied_verbatim",
+    "purpose": "2026-10-05 评审和知识点；教学示意不代表已运行",
+    "source_kind": "prior_project_output",
+    "bytes": 53957,
+    "sha256": "cd836c0fc1e8548aba15d214cd22c7acc6429b44e3f1b033695043ecfaa018e7"
+  },
+  {
+    "name": "秋序后端架构评审与知识点详解_v1.0.pdf",
+    "status": "copied_verbatim",
+    "purpose": "上一项的已交付 PDF，原样保留",
+    "source_kind": "prior_project_output",
+    "bytes": 629489,
+    "sha256": "d693d7d04610e723accf5ea6c8bc45375746f4276b847a7ff5aacce8d55c6333"
+  },
+  {
+    "name": "秋序_实施顺序文档评审与A阶段验收.md",
+    "status": "copied_verbatim",
+    "purpose": "A 阶段初次评审，之后缺陷已修复",
+    "source_kind": "prior_project_output",
+    "bytes": 18318,
+    "sha256": "bd3fc49f0e887a6b0b4827fdbe83ea6ee6ba6ae3216cc8ae6fb853b2f0018a42"
+  },
+  {
+    "name": "秋序_v1.1_功能点实施顺序_评审修订建议.md",
+    "status": "copied_verbatim",
+    "purpose": "修订建议路线图；旧勾选状态不表示当前未实现",
+    "source_kind": "prior_project_output",
+    "bytes": 29273,
+    "sha256": "96844b4d19614ddd2473aeec44b167b59ec99a3f1df3f1f58129d28551439408"
+  },
+  {
+    "name": "个人网站与AI助手产品构想.md",
+    "status": "copied_verbatim",
+    "purpose": "最初产品构想；旧角色/命名/需求以当前决定为准",
+    "source_kind": "prior_project_output",
+    "bytes": 38121,
+    "sha256": "92e4bc1bf416ab142a34c7ec7c201f57db5501dcac7310216c9c9c084a218b38"
+  }
+]

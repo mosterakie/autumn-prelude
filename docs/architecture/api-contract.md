@@ -1,5 +1,7 @@
 # 秋序前后端接口契约
 
+归档说明（2026-10-06）：本文包含目标 API 与增量契约。当前实际注册的 53 个业务路由、尚缺的知识库/设置/记忆/审计入口及联调边界见 [路由快照](../archive/08-api-snapshot.md) 和 [项目现状](../archive/01-project-snapshot.md)。
+
 版本：v1.1。本文约定首版接口，不表示这些端点已经实现。F1–F8 已交付范围、实际动作请求体与后续入口见 [F 阶段接口说明](../../backend/F_STAGE_API.md)。前端实现补充了会话恢复元数据与公开权限版本字段；后续以 FastAPI 输出的 OpenAPI 与本文一致性检查维护契约。
 
 ## 1 通用约定
@@ -30,36 +32,36 @@
 }
 ```
 
-| HTTP | code 示例 | 前端行为 |
-| --- | --- | --- |
-| 401 | AUTH_REQUIRED、SESSION_EXPIRED | 登录并返回原位置 |
-| 403 | EMAIL_UNVERIFIED、STEP_UP_REQUIRED、FORBIDDEN | 展示验证或权限提示 |
-| 404 | NOT_FOUND | 不区分不存在和无权读取的私密对象 |
-| 409 | VERSION_CONFLICT、IDEMPOTENCY_CONFLICT、CONVERSATION_BUSY | 重新取数或回到已有任务 |
-| 409 | ACL_CONTEXT_INVALIDATED | 停止旧上下文输出；重新鉴权并重建上下文后才能进入新的执行阶段 |
-| 413 | INPUT_TOO_LARGE、FILE_TOO_LARGE | 提示长度或大小限制 |
-| 415 | UNSUPPORTED_FILE_TYPE | 提示仅 PDF 与 DOCX |
-| 422 | VALIDATION_ERROR、OCR_REQUIRED、INVALID_URL | 字段级错误或资料提示 |
-| 422 | INPUT_CHOICE_REQUIRED | 保留等待状态与已选值，提示从当前选项中选择 |
-| 429 | AI_COOLDOWN、QUOTA_EXCEEDED、RATE_LIMITED、CONCURRENCY_LIMIT | 展示截止时间或稍后重试 |
-| 502 或 503 | PROVIDER_UNAVAILABLE、SERVICE_UNAVAILABLE | 保留输入，按明确提示重试 |
+| HTTP       | code 示例                                                    | 前端行为                                                     |
+| ---------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| 401        | AUTH_REQUIRED、SESSION_EXPIRED                               | 登录并返回原位置                                             |
+| 403        | EMAIL_UNVERIFIED、STEP_UP_REQUIRED、FORBIDDEN                | 展示验证或权限提示                                           |
+| 404        | NOT_FOUND                                                    | 不区分不存在和无权读取的私密对象                             |
+| 409        | VERSION_CONFLICT、IDEMPOTENCY_CONFLICT、CONVERSATION_BUSY    | 重新取数或回到已有任务                                       |
+| 409        | ACL_CONTEXT_INVALIDATED                                      | 停止旧上下文输出；重新鉴权并重建上下文后才能进入新的执行阶段 |
+| 413        | INPUT_TOO_LARGE、FILE_TOO_LARGE                              | 提示长度或大小限制                                           |
+| 415        | UNSUPPORTED_FILE_TYPE                                        | 提示仅 PDF 与 DOCX                                           |
+| 422        | VALIDATION_ERROR、OCR_REQUIRED、INVALID_URL                  | 字段级错误或资料提示                                         |
+| 422        | INPUT_CHOICE_REQUIRED                                        | 保留等待状态与已选值，提示从当前选项中选择                   |
+| 429        | AI_COOLDOWN、QUOTA_EXCEEDED、RATE_LIMITED、CONCURRENCY_LIMIT | 展示截止时间或稍后重试                                       |
+| 502 或 503 | PROVIDER_UNAVAILABLE、SERVICE_UNAVAILABLE                    | 保留输入，按明确提示重试                                     |
 
 异步解析失败通过 JobDTO.error 返回 OCR_REQUIRED 或 EXTRACTION_FAILED；HTTP 上传请求本身可已经成功受理。客户端不能把 HTTP 202 当作资料已可检索。
 
 ## 2 登录与当前账号
 
-| 方法与路径 | 权限 | 输入与结果 |
-| --- | --- | --- |
-| POST /api/auth/register | 匿名 | email、password、display_name；统一 202，不暴露邮箱是否已存在 |
-| POST /api/auth/verify-email | 一次性 token | token；完成首次验证并设置冷却 |
-| POST /api/auth/resend-verification | 匿名 | email；统一 202，限制重发频率 |
-| POST /api/auth/login | 匿名 | email、password；设置会话 Cookie，返回本人资料与 csrf_token |
-| POST /api/auth/logout | 本人会话 | 撤销当前会话并清 Cookie，204 |
-| POST /api/auth/forgot-password | 匿名 | email；统一 202 |
-| POST /api/auth/reset-password | 一次性 token | token、new_password；撤销旧会话，要求重新登录 |
-| GET /api/auth/me | 可匿名调用 | 未登录返回 user=null；已登录返回状态、能力、csrf_token 和 server_time |
-| POST /api/auth/step-up | 已登录站长 | totp_code 或 recovery_code 二选一；返回 step_up_expires_at |
-| GET /api/me/quota | 本人会话 | 冷却、当日限额、已用、预占、剩余和下次重置时间 |
+| 方法与路径                         | 权限         | 输入与结果                                                            |
+| ---------------------------------- | ------------ | --------------------------------------------------------------------- |
+| POST /api/auth/register            | 匿名         | email、password、display_name；统一 202，不暴露邮箱是否已存在         |
+| POST /api/auth/verify-email        | 一次性 token | token；完成首次验证并设置冷却                                         |
+| POST /api/auth/resend-verification | 匿名         | email；统一 202，限制重发频率                                         |
+| POST /api/auth/login               | 匿名         | email、password；设置会话 Cookie，返回本人资料与 csrf_token           |
+| POST /api/auth/logout              | 本人会话     | 撤销当前会话并清 Cookie，204                                          |
+| POST /api/auth/forgot-password     | 匿名         | email；统一 202                                                       |
+| POST /api/auth/reset-password      | 一次性 token | token、new_password；撤销旧会话，要求重新登录                         |
+| GET /api/auth/me                   | 可匿名调用   | 未登录返回 user=null；已登录返回状态、能力、csrf_token 和 server_time |
+| POST /api/auth/step-up             | 已登录站长   | totp_code 或 recovery_code 二选一；返回 step_up_expires_at            |
+| GET /api/me/quota                  | 本人会话     | 冷却、当日限额、已用、预占、剩余和下次重置时间                        |
 
 /auth/me 和所有认证响应 no-store。csrf_token 只保存在前端内存；密码、Cookie 原始值、TOTP 密钥不出现在响应或日志中。TOTP 初始绑定使用受控引导流程，首版不开放匿名在线站长注册。
 
@@ -73,19 +75,19 @@ timezone、window_start、window_end、daily_limit、used、reserved、remaining
 
 ## 3 公共内容与留言
 
-| 方法与路径 | 权限 | 说明 |
-| --- | --- | --- |
-| GET /api/public/site | 所有人 | 站名、导航、已公开账号链接和角色展示配置 |
-| GET /api/public/notes | 所有人 | 公开文章列表，cursor、limit、tag |
-| GET /api/public/notes/{slug} | 所有人 | 当前公开文章 |
-| GET /api/public/bookmarks | 所有人 | 只含公开字段的收藏列表 |
-| GET /api/public/sources/{publication_id} | 所有人 | 仍有效的资料公开投影 |
-| GET /api/public/sources/{publication_id}/file | 所有人 | 仅 raw_download_enabled 且发布未撤回时下载 |
-| GET /api/public/comments | 所有人 | resource_id 可空；仅已审核且仍可公开访问的留言 |
-| POST /api/comments | 已验证用户 | resource_id 可空、parent_id 可空、body、client_id；返回 pending 或 approved |
-| PATCH /api/comments/{id} | 作者本人 | body、expected_version；修改已审核内容重新审核 |
-| DELETE /api/comments/{id} | 作者本人或已升级站长 | JSON 体 expected_version；主动删除，204 |
-| POST /api/reports | 已验证用户 | comment_id、reason；受理举报 |
+| 方法与路径                                    | 权限                 | 说明                                                                        |
+| --------------------------------------------- | -------------------- | --------------------------------------------------------------------------- |
+| GET /api/public/site                          | 所有人               | 站名、导航、已公开账号链接和角色展示配置                                    |
+| GET /api/public/notes                         | 所有人               | 公开文章列表，cursor、limit、tag                                            |
+| GET /api/public/notes/{slug}                  | 所有人               | 当前公开文章                                                                |
+| GET /api/public/bookmarks                     | 所有人               | 只含公开字段的收藏列表                                                      |
+| GET /api/public/sources/{publication_id}      | 所有人               | 仍有效的资料公开投影                                                        |
+| GET /api/public/sources/{publication_id}/file | 所有人               | 仅 raw_download_enabled 且发布未撤回时下载                                  |
+| GET /api/public/comments                      | 所有人               | resource_id 可空；仅已审核且仍可公开访问的留言                              |
+| POST /api/comments                            | 已验证用户           | resource_id 可空、parent_id 可空、body、client_id；返回 pending 或 approved |
+| PATCH /api/comments/{id}                      | 作者本人             | body、expected_version；修改已审核内容重新审核                              |
+| DELETE /api/comments/{id}                     | 作者本人或已升级站长 | JSON 体 expected_version；主动删除，204                                     |
+| POST /api/reports                             | 已验证用户           | comment_id、reason；受理举报                                                |
 
 PublicResourceDTO 为 id、kind、slug、publication_id、publication_no、title、body、note、url、tags、published_at、ai_enabled、raw_download_enabled。未选择公开的 body、note、url 不返回，不能把 private_note 包含在响应再让 UI 隐藏。
 
@@ -93,20 +95,20 @@ CommentDTO 为 id、resource_id、parent_id、author_display_name、body、statu
 
 ## 4 会话与问答
 
-| 方法与路径 | 权限 | 说明 |
-| --- | --- | --- |
-| POST /api/conversations | 已验证用户 | mode、title 可空；owner 模式要求站长额外验证 |
-| GET /api/conversations | 本人 | 按 mode 过滤，分页；owner 模式要求额外验证 |
-| GET /api/conversations/{id} | 会话本人 | 读取 ConversationDTO，按固定 mode 检查权限，供刷新恢复使用 |
-| GET /api/conversations/{id}/messages | 会话本人 | 分页历史，隐藏已失权的派生内容 |
-| PATCH /api/conversations/{id} | 会话本人 | title、expected_version；不能更改 mode |
-| DELETE /api/conversations/{id} | 会话本人 | 软删除并安排相关清理，不修改计数 |
-| POST /api/ask | 已验证用户 | 冷却、额度、模式和工具检查后返回 202 |
-| GET /api/runs/{id} | 运行本人 | 权限有效时返回状态、当前消息、待处理动作 |
-| GET /api/runs/{id}/events | 运行本人 | SSE，可用 after 或 Last-Event-ID 续接 |
-| POST /api/runs/{id}/cancel | 运行本人 | 请求取消，202；不承诺已发生的动作被撤销 |
-| POST /api/runs/{id}/resume | 运行本人 | waiting_input 或 waiting_auth 时恢复，不新建问答次数 |
-| GET /api/citations/{id} | 引用所属运行本人 | 对当前仍获准的来源返回摘录与定位 |
+| 方法与路径                           | 权限             | 说明                                                       |
+| ------------------------------------ | ---------------- | ---------------------------------------------------------- |
+| POST /api/conversations              | 已验证用户       | mode、title 可空；owner 模式要求站长额外验证               |
+| GET /api/conversations               | 本人             | 按 mode 过滤，分页；owner 模式要求额外验证                 |
+| GET /api/conversations/{id}          | 会话本人         | 读取 ConversationDTO，按固定 mode 检查权限，供刷新恢复使用 |
+| GET /api/conversations/{id}/messages | 会话本人         | 分页历史，隐藏已失权的派生内容                             |
+| PATCH /api/conversations/{id}        | 会话本人         | title、expected_version；不能更改 mode                     |
+| DELETE /api/conversations/{id}       | 会话本人         | 软删除并安排相关清理，不修改计数                           |
+| POST /api/ask                        | 已验证用户       | 冷却、额度、模式和工具检查后返回 202                       |
+| GET /api/runs/{id}                   | 运行本人         | 权限有效时返回状态、当前消息、待处理动作                   |
+| GET /api/runs/{id}/events            | 运行本人         | SSE，可用 after 或 Last-Event-ID 续接                      |
+| POST /api/runs/{id}/cancel           | 运行本人         | 请求取消，202；不承诺已发生的动作被撤销                    |
+| POST /api/runs/{id}/resume           | 运行本人         | waiting_input 或 waiting_auth 时恢复，不新建问答次数       |
+| GET /api/citations/{id}              | 引用所属运行本人 | 对当前仍获准的来源返回摘录与定位                           |
 
 mode 为 public 或 owner，创建后固定。public 表示使用公开知识，聊天记录本身不公开。每个会话只有一个非终态运行；需要换题可新建会话。
 
@@ -148,19 +150,19 @@ GET /api/runs/{id}/events 返回 text/event-stream，使用 Cookie 鉴权。事�
 
 心跳不携带业务数据，不改变任务状态。默认可 15 秒心跳；每批业务输出都检查登录、模式与资料权限。重连不重新创建任务，不调用新的模型，不再次扣次。
 
-| event | data 核心字段 | 前端处理 |
-| --- | --- | --- |
-| run.status | run_id、status | 更新任务状态 |
-| message.snapshot | message_id、body、content_version、status、citations | 用较新的版本整体替换累计文本 |
-| tool.started | display_name、action_id 可空、summary | 展示允许公开给当前用户的操作摘要 |
-| tool.finished | action_id 可空、result_summary | 更新工具卡片 |
-| knowledge.processing | job_id、phase、progress | 显示后台任务进度 |
-| action.proposed | ActionDTO | 显示具体待确认事项 |
-| action.succeeded | action_id、result | 报告已提交的修改 |
-| source.invalidated | message_ids、reason | 隐藏相关生成文本并刷新 |
-| scope.changed | reason、requires_step_up | 暂停敏感展示并完成验证 |
-| error | code、message、retryable | 显示失败原因，不自行生成新 ask |
-| done | run_id、status | 关闭流并刷新额度 |
+| event                | data 核心字段                                        | 前端处理                         |
+| -------------------- | ---------------------------------------------------- | -------------------------------- |
+| run.status           | run_id、status                                       | 更新任务状态                     |
+| message.snapshot     | message_id、body、content_version、status、citations | 用较新的版本整体替换累计文本     |
+| tool.started         | display_name、action_id 可空、summary                | 展示允许公开给当前用户的操作摘要 |
+| tool.finished        | action_id 可空、result_summary                       | 更新工具卡片                     |
+| knowledge.processing | job_id、phase、progress                              | 显示后台任务进度                 |
+| action.proposed      | ActionDTO                                            | 显示具体待确认事项               |
+| action.succeeded     | action_id、result                                    | 报告已提交的修改                 |
+| source.invalidated   | message_ids、reason                                  | 隐藏相关生成文本并刷新           |
+| scope.changed        | reason、requires_step_up                             | 暂停敏感展示并完成验证           |
+| error                | code、message、retryable                             | 显示失败原因，不自行生成新 ask   |
+| done                 | run_id、status                                       | 关闭流并刷新额度                 |
 
 事件回放只从存储的对象 ID 和元数据重新构造当前可读结果，不把历史私密 payload 原样重放。重连先补当前 MessageDTO；快照可能晚于事件游标，客户端凭 content_version 去重。done 只表示终态，不用于 waiting_input 或 waiting_approval；等待时可以关闭连接并显示可恢复状态。
 
@@ -174,23 +176,23 @@ data: {"message_id":"33333333-3333-4333-8333-333333333333","body":"找到了两�
 
 以下均要求 owner 且额外验证有效。
 
-| 方法与路径 | 请求或结果 |
-| --- | --- |
-| GET /api/resources | kind、cursor、limit；读取本人资源列表 |
-| GET /api/resources/{id} | 当前原稿、版本、现行公开状态 |
-| POST /api/resources | 创建 article 或 bookmark；title、正文或 URL、tags、private_note |
-| PATCH /api/resources/{id} | expected_version 与变更字段；生成新 revision |
-| DELETE /api/resources/{id} | expected_version；软删除、撤回公开、返回清理任务 |
-| GET /api/resources/{id}/versions | 版本列表 |
-| GET /api/resources/{id}/versions/{revision_id}/file | 鉴权后读取确切版本原文件 |
-| POST /api/resources/{id}/publication/preview | revision_id、public_fields、ai_enabled、raw_download_enabled、expected_version、expected_acl_version |
-| POST /api/resources/{id}/publication/revoke | expected_version、expected_acl_version；立即撤回 |
-| POST /api/knowledge/files | multipart file 与 title；创建资源和解析 job，202 |
-| POST /api/knowledge/urls | url、mode、title 可空、tags；收藏或抓取入库，202 |
-| POST /api/resources/{id}/refresh | expected_version；仅网页资料手动抓取新版本，202 |
-| GET /api/jobs/{id} | 状态、阶段、进度和错误 |
-| POST /api/jobs/{id}/cancel | 请求取消 |
-| POST /api/jobs/{id}/retry | failed 或 waiting_auth 时重试或恢复；重用资源，避免重复入库 |
+| 方法与路径                                          | 请求或结果                                                                                           |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| GET /api/resources                                  | kind、cursor、limit；读取本人资源列表                                                                |
+| GET /api/resources/{id}                             | 当前原稿、版本、现行公开状态                                                                         |
+| POST /api/resources                                 | 创建 article 或 bookmark；title、正文或 URL、tags、private_note                                      |
+| PATCH /api/resources/{id}                           | expected_version 与变更字段；生成新 revision                                                         |
+| DELETE /api/resources/{id}                          | expected_version；软删除、撤回公开、返回清理任务                                                     |
+| GET /api/resources/{id}/versions                    | 版本列表                                                                                             |
+| GET /api/resources/{id}/versions/{revision_id}/file | 鉴权后读取确切版本原文件                                                                             |
+| POST /api/resources/{id}/publication/preview        | revision_id、public_fields、ai_enabled、raw_download_enabled、expected_version、expected_acl_version |
+| POST /api/resources/{id}/publication/revoke         | expected_version、expected_acl_version；立即撤回                                                     |
+| POST /api/knowledge/files                           | multipart file 与 title；创建资源和解析 job，202                                                     |
+| POST /api/knowledge/urls                            | url、mode、title 可空、tags；收藏或抓取入库，202                                                     |
+| POST /api/resources/{id}/refresh                    | expected_version；仅网页资料手动抓取新版本，202                                                      |
+| GET /api/jobs/{id}                                  | 状态、阶段、进度和错误                                                                               |
+| POST /api/jobs/{id}/cancel                          | 请求取消                                                                                             |
+| POST /api/jobs/{id}/retry                           | failed 或 waiting_auth 时重试或恢复；重用资源，避免重复入库                                          |
 
 knowledge/urls.mode 为 bookmark_only、knowledge_only 或 bookmark_and_knowledge。收藏与网页资料分别是资源，关联但不继承权限。仅收藏时也会校验 URL；获取标题失败可由站长手填，不宣称正文已入库。
 
@@ -215,25 +217,25 @@ preview 返回 ActionDTO 与预览，不立即发布。站长点击确认后执�
 
 ## 7 操作 设置与审核
 
-| 方法与路径 | 权限与职责 |
-| --- | --- |
-| GET /api/actions/{id} | 操作本人，按动作重新检查站长验证 |
-| POST /api/actions/{id}/execute | 操作本人；参数哈希与 expected_version 匹配，执行既定变更 |
-| POST /api/actions/{id}/cancel | 操作本人；仅未执行动作可取消 |
-| POST /api/actions/{id}/undo | 站长；仅标记 can_undo 的动作，生成补偿动作 |
-| GET /api/settings/ai-limits | 站长；当前冷却、日额度、速率和并发 |
-| PATCH /api/settings/ai-limits | 站长；expected_version、值、明确生效范围 |
-| GET /api/settings/retention | 站长；当前全部默认 forever |
-| POST /api/settings/retention/preview | 站长；scope、mode、ttl_days、include_existing；返回影响及 ActionDTO |
-| GET /api/memories | 站长；本人确认过的偏好和事实 |
-| POST /api/memories | 站长；content、kind、来源可空 |
-| PATCH /api/memories/{id} | 站长本人；expected_version 与内容 |
-| DELETE /api/memories/{id} | 站长本人；同时处理派生状态 |
-| GET /api/moderation/comments | 站长；按审核状态查询 |
-| POST /api/moderation/comments/{id}/decision | 站长；decision、reason、expected_version |
-| GET /api/moderation/reports | 站长；待处理举报 |
-| POST /api/moderation/reports/{id}/resolve | 站长；resolution |
-| GET /api/audit-events | 站长；按对象和时间查询脱敏操作记录 |
+| 方法与路径                                  | 权限与职责                                                          |
+| ------------------------------------------- | ------------------------------------------------------------------- |
+| GET /api/actions/{id}                       | 操作本人，按动作重新检查站长验证                                    |
+| POST /api/actions/{id}/execute              | 操作本人；参数哈希与 expected_version 匹配，执行既定变更            |
+| POST /api/actions/{id}/cancel               | 操作本人；仅未执行动作可取消                                        |
+| POST /api/actions/{id}/undo                 | 站长；仅标记 can_undo 的动作，生成补偿动作                          |
+| GET /api/settings/ai-limits                 | 站长；当前冷却、日额度、速率和并发                                  |
+| PATCH /api/settings/ai-limits               | 站长；expected_version、值、明确生效范围                            |
+| GET /api/settings/retention                 | 站长；当前全部默认 forever                                          |
+| POST /api/settings/retention/preview        | 站长；scope、mode、ttl_days、include_existing；返回影响及 ActionDTO |
+| GET /api/memories                           | 站长；本人确认过的偏好和事实                                        |
+| POST /api/memories                          | 站长；content、kind、来源可空                                       |
+| PATCH /api/memories/{id}                    | 站长本人；expected_version 与内容                                   |
+| DELETE /api/memories/{id}                   | 站长本人；同时处理派生状态                                          |
+| GET /api/moderation/comments                | 站长；按审核状态查询                                                |
+| POST /api/moderation/comments/{id}/decision | 站长；decision、reason、expected_version                            |
+| GET /api/moderation/reports                 | 站长；待处理举报                                                    |
+| POST /api/moderation/reports/{id}/resolve   | 站长；resolution                                                    |
+| GET /api/audit-events                       | 站长；按对象和时间查询脱敏操作记录                                  |
 
 ActionDTO 包括 id、version、type、target、target_id、expected_version、expected_acl_version、parameters_hash、summary、changes、impact、requires_confirmation、status、expires_at、can_undo、result。version 是动作自身版本，expected_version 是预览目标版本，不能混用。expected_acl_version 在公开权限操作中必填，执行时与内容版本一起重新检查，避免旧预览覆盖已改变的权限。status 为 proposed、awaiting_confirmation、ready、running、succeeded、failed、cancelled、expired。
 
@@ -255,11 +257,11 @@ execute 路径固定 action_id，JSON 体提交 expected_action_version（Action
 
 均使用现有响应/错误 envelope、Cookie 会话和写操作 CSRF 校验，并要求当前站长额外验证。
 
-| 方法与路径 | 语义 |
-| --- | --- |
-| GET /api/owner/jobs | 本人 waiting_auth 任务的 ID、类型、版本，不返回 payload/token |
-| POST /api/owner/jobs/{id}/resume | expected_version CAS；仅文件/知识任务，换绑本人当前 Session，无未结清调用 |
-| GET /api/owner/provider-calls/unknown | 最多 100 条未知账本元数据和当前 Run 仲裁版本，不返回提示/正文 |
+| 方法与路径                                    | 语义                                                                       |
+| --------------------------------------------- | -------------------------------------------------------------------------- |
+| GET /api/owner/jobs                           | 本人 waiting_auth 任务的 ID、类型、版本，不返回 payload/token              |
+| POST /api/owner/jobs/{id}/resume              | expected_version CAS；仅文件/知识任务，换绑本人当前 Session，无未结清调用  |
+| GET /api/owner/provider-calls/unknown         | 最多 100 条未知账本元数据和当前 Run 仲裁版本，不返回提示/正文              |
 | POST /api/owner/provider-calls/{id}/reconcile | 人工确认供应商终态、证据摘要与费用；重复同一回执幂等，不恢复任务或生成回复 |
 
 对账请求 schema 与处理边界见 [H 阶段说明](../../backend/H_STAGE_WORKERS.md)。聊天 Run 的恢复沿用原接口，不经此任务接口恢复已确认动作；对账不作为 Agent 工具。

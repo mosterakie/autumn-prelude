@@ -1,5 +1,7 @@
 # 秋序数据库设计
 
+归档说明（2026-10-06）：当前实现为 28 张业务表、7 个业务迁移，head `a7c19e23b806`。本文保留实体设计，实际列/约束与有意偏离请结合 [字段快照](../archive/07-database-snapshot.md) 和 [数据契约](../../backend/DATA_CONTRACT.md)；框架表使用独立 schema，不计入业务表。
+
 版本：v1.0。这是物理建模说明，尚未执行建表。后续用 SQLAlchemy 模型和 Alembic 迁移实现，不把本文当作已经验证的迁移脚本。
 
 ## 1 存储规则
@@ -43,18 +45,18 @@ erDiagram
 
 ### users
 
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| id | uuid PK | 稳定用户 ID |
-| email_normalized | text UNIQUE NOT NULL | 规范化邮箱 |
-| display_name | varchar(80) | 公开昵称 |
-| password_hash | text NOT NULL | Argon2id 哈希，不存明文 |
-| role | text | member 或 owner |
-| status | text | pending_verification、active、disabled |
-| verified_at | timestamptz NULL | 首次验证成功时间 |
-| ai_cooldown_until | timestamptz NULL | 首次验证成功时按当时策略计算 |
-| auth_version | bigint | 撤销身份或密码变化时递增 |
-| deleted_at | timestamptz NULL | 账号删除入口预留 |
+| 字段              | 类型                 | 说明                                   |
+| ----------------- | -------------------- | -------------------------------------- |
+| id                | uuid PK              | 稳定用户 ID                            |
+| email_normalized  | text UNIQUE NOT NULL | 规范化邮箱                             |
+| display_name      | varchar(80)          | 公开昵称                               |
+| password_hash     | text NOT NULL        | Argon2id 哈希，不存明文                |
+| role              | text                 | member 或 owner                        |
+| status            | text                 | pending_verification、active、disabled |
+| verified_at       | timestamptz NULL     | 首次验证成功时间                       |
+| ai_cooldown_until | timestamptz NULL     | 首次验证成功时按当时策略计算           |
+| auth_version      | bigint               | 撤销身份或密码变化时递增               |
+| deleted_at        | timestamptz NULL     | 账号删除入口预留                       |
 
 角色只能由受控引导或管理流程改变，公开注册强制 member。email_normalized 的唯一性不因软删除解除，重新使用同一邮箱需明确恢复或彻底清理流程。索引覆盖 status 与创建时间。
 
@@ -80,17 +82,17 @@ id UUID PK；user_id FK users UNIQUE；kind 固定 totp；secret_ciphertext；en
 
 ### resources
 
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| id | uuid PK | 统一内容对象 ID |
-| owner_id | uuid FK users | 归属站长 |
-| kind | text | article、bookmark、document、webpage |
-| slug | varchar(160) UNIQUE | 对外稳定标识，私密状态仍返回 404 |
-| current_revision_id | uuid | 当前私密版本 |
-| version | bigint NOT NULL | 每次编辑或权限修改递增 |
-| acl_version | bigint NOT NULL | 公开范围变化时递增 |
-| retention_policy_id | uuid FK retention_policies NULL | NULL 继承该类型默认策略 |
-| archived_at deleted_at expires_at | timestamptz NULL | 归档、主动删除和到期信息 |
+| 字段                              | 类型                            | 说明                                 |
+| --------------------------------- | ------------------------------- | ------------------------------------ |
+| id                                | uuid PK                         | 统一内容对象 ID                      |
+| owner_id                          | uuid FK users                   | 归属站长                             |
+| kind                              | text                            | article、bookmark、document、webpage |
+| slug                              | varchar(160) UNIQUE             | 对外稳定标识，私密状态仍返回 404     |
+| current_revision_id               | uuid                            | 当前私密版本                         |
+| version                           | bigint NOT NULL                 | 每次编辑或权限修改递增               |
+| acl_version                       | bigint NOT NULL                 | 公开范围变化时递增                   |
+| retention_policy_id               | uuid FK retention_policies NULL | NULL 继承该类型默认策略              |
+| archived_at deleted_at expires_at | timestamptz NULL                | 归档、主动删除和到期信息             |
 
 同一资源 kind 不可改。UNIQUE(id, owner_id) 支持其他表的复合归属约束。current_revision_id 使用到 resource_versions(resource_id, id) 的可延迟复合外键，确保指向本资源版本。初始创建时在同一事务生成资源和首个版本。
 
@@ -108,19 +110,19 @@ UNIQUE(resource_id, revision_no) 和 UNIQUE(resource_id, id)。版本创建后�
 
 ### publications
 
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| id | uuid PK | 一次公开版本的身份 |
-| resource_id revision_id | uuid 复合 FK | 绑定确切的原稿版本 |
-| publication_no | integer | 该资源第几次发布 |
-| public_title | text | 对外标题 |
-| public_body public_note public_url | text NULL | 仅包含明确选择的字段 |
-| public_tags | text[] | 已选择公开的标签 |
-| public_fields | text[] | title、body、note、url、tags 的合法子集 |
-| ai_enabled | boolean DEFAULT false | 允许进入普通用户 AI 资料范围 |
-| raw_download_enabled | boolean DEFAULT false | 允许读取这一版本的原文件 |
-| published_by | uuid FK users | 发布者 |
-| published_at revoked_at | timestamptz | 当前发布或历史撤回状态 |
+| 字段                               | 类型                  | 说明                                    |
+| ---------------------------------- | --------------------- | --------------------------------------- |
+| id                                 | uuid PK               | 一次公开版本的身份                      |
+| resource_id revision_id            | uuid 复合 FK          | 绑定确切的原稿版本                      |
+| publication_no                     | integer               | 该资源第几次发布                        |
+| public_title                       | text                  | 对外标题                                |
+| public_body public_note public_url | text NULL             | 仅包含明确选择的字段                    |
+| public_tags                        | text[]                | 已选择公开的标签                        |
+| public_fields                      | text[]                | title、body、note、url、tags 的合法子集 |
+| ai_enabled                         | boolean DEFAULT false | 允许进入普通用户 AI 资料范围            |
+| raw_download_enabled               | boolean DEFAULT false | 允许读取这一版本的原文件                |
+| published_by                       | uuid FK users         | 发布者                                  |
+| published_at revoked_at            | timestamptz           | 当前发布或历史撤回状态                  |
 
 revoked_at 默认 NULL，published_at 必须有值。UNIQUE(resource_id, publication_no)；UNIQUE(resource_id, revision_id, id) 支持索引表的严格引用；部分唯一索引 UNIQUE(resource_id) WHERE revoked_at IS NULL，确保一个资源只有一个现行公开版本。
 
@@ -182,23 +184,23 @@ run_id 与 conversation_id 使用复合外键，保证同属会话。一次 run 
 
 ### runs
 
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| id | uuid PK | 一次问答或助手任务 |
-| user_id conversation_id | uuid 复合 FK | 必须属于同一用户 |
-| idempotency_key | varchar(128) | 用户范围内唯一 |
-| request_hash | text | 规范化业务请求哈希 |
-| input_message_id current_message_id | uuid NULL | 同会话消息指针 |
-| auth_session_id | uuid FK auth_sessions | 本次运行授权的会话 |
-| status | text | queued、running、waiting_input、waiting_approval、waiting_auth、succeeded、failed、cancelling、cancelled |
-| scope_epoch | bigint | 建立上下文时的全站权限版本 |
-| checkpoint_thread_id | text | 服务端生成的框架线程标识 |
-| next_event_seq | bigint | 持久事件的下一个序号 |
-| execution_generation | bigint | E8 增量迁移；>=1，等待/恢复推进，正式结果提交的执行 fencing |
-| config_snapshot | jsonb | 已校验的模型和预算版本，不含密钥 |
-| input_request | jsonb NULL | 等待补充信息的 id、prompt、options、expires_at、consumed_at、answer_hash 与 answer_message_id |
-| started_at finished_at | timestamptz NULL | 生命周期 |
-| error_code | text NULL | 结构化错误码 |
+| 字段                                | 类型                  | 说明                                                                                                     |
+| ----------------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------- |
+| id                                  | uuid PK               | 一次问答或助手任务                                                                                       |
+| user_id conversation_id             | uuid 复合 FK          | 必须属于同一用户                                                                                         |
+| idempotency_key                     | varchar(128)          | 用户范围内唯一                                                                                           |
+| request_hash                        | text                  | 规范化业务请求哈希                                                                                       |
+| input_message_id current_message_id | uuid NULL             | 同会话消息指针                                                                                           |
+| auth_session_id                     | uuid FK auth_sessions | 本次运行授权的会话                                                                                       |
+| status                              | text                  | queued、running、waiting_input、waiting_approval、waiting_auth、succeeded、failed、cancelling、cancelled |
+| scope_epoch                         | bigint                | 建立上下文时的全站权限版本                                                                               |
+| checkpoint_thread_id                | text                  | 服务端生成的框架线程标识                                                                                 |
+| next_event_seq                      | bigint                | 持久事件的下一个序号                                                                                     |
+| execution_generation                | bigint                | E8 增量迁移；>=1，等待/恢复推进，正式结果提交的执行 fencing                                              |
+| config_snapshot                     | jsonb                 | 已校验的模型和预算版本，不含密钥                                                                         |
+| input_request                       | jsonb NULL            | 等待补充信息的 id、prompt、options、expires_at、consumed_at、answer_hash 与 answer_message_id            |
+| started_at finished_at              | timestamptz NULL      | 生命周期                                                                                                 |
+| error_code                          | text NULL             | 结构化错误码                                                                                             |
 
 UNIQUE(user_id, idempotency_key)。UNIQUE(id, conversation_id) 供 messages 复合引用；UNIQUE(conversation_id) 的部分索引只包含非终态，保证会话中没有两次同时推进的任务。用户并发上限用 users 行锁后计数，支持配置，不用固定为 1 的全局唯一索引。
 

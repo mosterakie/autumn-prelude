@@ -21,7 +21,9 @@
 额度、文件、知识库、动作等待与正式结果提交见 [E_STAGE_SERVICES.md](E_STAGE_SERVICES.md)。
 邮箱密码/会话认证已接入，说明见 [AUTH_CONTRACT.md](AUTH_CONTRACT.md)。已交付 API、SSE、版本/动作请求体及剩余入口见 [F_STAGE_API.md](F_STAGE_API.md)。LangGraph 与薄工具、权限/预算/等待恢复/来源提交见 [G_STAGE_AGENT.md](G_STAGE_AGENT.md)。Worker 启动、处理器、Postgres 检查点、故障回收与人工对账见 [H_STAGE_WORKERS.md](H_STAGE_WORKERS.md)。DeepSeek、百炼嵌入与 Tavily 已接入并通过真实 AI 链路基础验收，见 [PROVIDERS_ACCEPTANCE.md](PROVIDERS_ACCEPTANCE.md)；真实邮件、前后端完整联调及 I 阶段横切验收仍待完成。
 
-SMTP 配置与 auth.email 发送处理器已接入，支持验证邮箱与重置密码。本地 163 邮箱配置、授权码填写位置和使用方法见 [EMAIL_CONFIGURATION.md](EMAIL_CONFIGURATION.md)。授权码尚未填写，真实 SMTP 登录与收件仍待验证；注册受理不表示邮件已经发出。
+SMTP 配置与 auth.email 发送处理器已接入，支持验证邮箱与重置密码。本地 163 邮箱配置、授权码填写位置和使用方法见 [EMAIL_CONFIGURATION.md](EMAIL_CONFIGURATION.md)。授权码由站长本地填写，真实 SMTP 登录与收件仍待验证；注册受理不表示邮件已经发出。
+
+完整项目现状、知识点、数据库/路由快照、运行和历史资料索引见 [2026-10-06 研究归档](../docs/archive/README.md)。
 
 ### 阶段 A 验收与评审修复
 
@@ -31,13 +33,13 @@ D1–D12 文档问题，并判定"迁移安装与已有测试通过，但完整�
 
 **缺陷修复**（已**折进重写后的迁移基线**，不再有单独的修复 revision）：
 
-| 编号 | 缺陷 | 修复位置 |
-|---|---|---|
-| A-P1-1 | `publications.public_no` 被写成全局唯一 | `UNIQUE(resource_id, publication_no)` |
+| 编号   | 缺陷                                          | 修复位置                                                            |
+| ------ | --------------------------------------------- | ------------------------------------------------------------------- |
+| A-P1-1 | `publications.public_no` 被写成全局唯一       | `UNIQUE(resource_id, publication_no)`                               |
 | A-P1-2 | `actions` 幂等键含可空列，NULL 让唯一约束失效 | 不可空 `UNIQUE(actor_id, idempotency_key)` + `parameters_hash` 判等 |
-| A-P1-3 | 生产环境静默接受代码内的开发默认密钥 | `config.py`：生产必须**显式**提供且不得等于占位值 |
-| A-P1-4 | publication 的 revision 未绑定同一资源 | 复合外键 `(resource_id, revision_id)` |
-| A-P2-5 | 会话轮换 CHECK 与后继会话 `SET NULL` 冲突 | 单向蕴含，允许"后继已清理"的墓碑状态 |
+| A-P1-3 | 生产环境静默接受代码内的开发默认密钥          | `config.py`：生产必须**显式**提供且不得等于占位值                   |
+| A-P1-4 | publication 的 revision 未绑定同一资源        | 复合外键 `(resource_id, revision_id)`                               |
+| A-P2-5 | 会话轮换 CHECK 与后继会话 `SET NULL` 冲突     | 单向蕴含，允许"后继已清理"的墓碑状态                                |
 
 **基线重写**：按 `docs/architecture/database.md`（物理建模说明）
 把 stage A 的 schema 从 22 表扩到 **28 表**，并让所有既有表与该文档对齐
@@ -152,7 +154,7 @@ backend/
 ```powershell
 cd backend
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[dev,agent]"
+.\.venv\Scripts\python.exe -m pip install -e ".[dev,agent,providers]"
 Copy-Item .env.example .env   # 按本机情况填写
 .\.venv\Scripts\python.exe scripts\bootstrap_db.py   # 建应用库 + vector 扩展
 ```
@@ -214,24 +216,24 @@ autogenerate 的产物），因此只有在确实要重建基线时才走这条�
 
 ## 配置要点
 
-| 变量 | 说明 |
-|---|---|
-| `AUTUMN_ENVIRONMENT` | `local` / `dev` / `test` / `prod`；生产缺少合规密钥时启动即失败 |
-| `AUTUMN_DATABASE_URL` | PostgreSQL DSN；`postgresql://` 会自动补 `+asyncpg` |
-| `AUTUMN_SESSION_SECRET` / `AUTUMN_CSRF_SECRET` | 生产必须 ≥32 字符 |
-| `AUTUMN_COOKIE_SECURE` / `AUTUMN_COOKIE_NAME` | 生产强制 `Secure` + `__Host-` 前缀 |
-| `AUTUMN_QUOTA_TIMEZONE` | 每日额度切分时区，默认 `Asia/Shanghai`；数据库时间统一 UTC |
+| 变量                                           | 说明                                                            |
+| ---------------------------------------------- | --------------------------------------------------------------- |
+| `AUTUMN_ENVIRONMENT`                           | `local` / `dev` / `test` / `prod`；生产缺少合规密钥时启动即失败 |
+| `AUTUMN_DATABASE_URL`                          | PostgreSQL DSN；`postgresql://` 会自动补 `+asyncpg`             |
+| `AUTUMN_SESSION_SECRET` / `AUTUMN_CSRF_SECRET` | 生产必须 ≥32 字符                                               |
+| `AUTUMN_COOKIE_SECURE` / `AUTUMN_COOKIE_NAME`  | 生产强制 `Secure` + `__Host-` 前缀                              |
+| `AUTUMN_QUOTA_TIMEZONE`                        | 每日额度切分时区，默认 `Asia/Shanghai`；数据库时间统一 UTC      |
 
 数据库连接的会话时区被强制为 UTC（`connect_args.server_settings.timezone`）。
 
 ## 数据模型约定（A2 起）
 
-| Mixin | 列 | 语义边界 |
-|---|---|---|
-| `UUIDPrimaryKey` | `id UUID` | 仅 UUID 主键表；`Setting` 等 str 主键表**不**套用 |
-| `Versioned` | `version BIGINT NOT NULL` | **只服务私人内容/metadata 的乐观并发** |
-| `Timestamped` | `created_at` / `updated_at` timestamptz | 时间统一 UTC |
-| `SoftDelete` | `deleted_at` / `archived_at` | 两个时刻互相独立；`SoftDeleteState` 三态 |
+| Mixin            | 列                                      | 语义边界                                          |
+| ---------------- | --------------------------------------- | ------------------------------------------------- |
+| `UUIDPrimaryKey` | `id UUID`                               | 仅 UUID 主键表；`Setting` 等 str 主键表**不**套用 |
+| `Versioned`      | `version BIGINT NOT NULL`               | **只服务私人内容/metadata 的乐观并发**            |
+| `Timestamped`    | `created_at` / `updated_at` timestamptz | 时间统一 UTC                                      |
+| `SoftDelete`     | `deleted_at` / `archived_at`            | 两个时刻互相独立；`SoftDeleteState` 三态          |
 
 **`version` 与 `acl_version` 完全解耦**：`Versioned` 故意**不**提供 `acl_version`。
 publish / revoke / 软删除 / 恢复只递增 `acl_version`，不伪造 `version` 变化——
@@ -252,14 +254,14 @@ Repository 能力。Mixin 只保留 `version_matches()` 让 service 表达"我�
 
 ## 内容与发布约定（A5 起）
 
-| 表 | 关键不变量 |
-|---|---|
-| `resources` | `version`（私人内容）与 `acl_version`（可见性）解耦；私密备注默认不公开，只有明确选中 note 投影才复制 |
-| `resource_versions` | 不可变：编辑新增行，已发布版本行只读；`(resource_id, revision_no)` 唯一 |
-| `publications` | **单资源只有一个现行公开版本**（`resource_id WHERE revoked_at IS NULL`） |
-| `comments` | `(author_id, client_id)` 唯一 + 原始 `request_hash` 判等；一级回复与父未删除在锁内校验，同资源由复合 FK 和 Repository 共同校验 |
-| `knowledge_indexes` | `scope='public'` 必须绑定同资源、同 revision 的 publication；ready 且 active 才能使用 |
-| `run_sources` | AppendOnly：只记录，不提供 update/delete；绑定 acl_version 与片段位置 |
+| 表                  | 关键不变量                                                                                                                     |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `resources`         | `version`（私人内容）与 `acl_version`（可见性）解耦；私密备注默认不公开，只有明确选中 note 投影才复制                          |
+| `resource_versions` | 不可变：编辑新增行，已发布版本行只读；`(resource_id, revision_no)` 唯一                                                        |
+| `publications`      | **单资源只有一个现行公开版本**（`resource_id WHERE revoked_at IS NULL`）                                                       |
+| `comments`          | `(author_id, client_id)` 唯一 + 原始 `request_hash` 判等；一级回复与父未删除在锁内校验，同资源由复合 FK 和 Repository 共同校验 |
+| `knowledge_indexes` | `scope='public'` 必须绑定同资源、同 revision 的 publication；ready 且 active 才能使用                                          |
+| `run_sources`       | AppendOnly：只记录，不提供 update/delete；绑定 acl_version 与片段位置                                                          |
 
 **公开索引的来源绑定由结构约束保护**：
 
@@ -279,17 +281,17 @@ NOT is_active OR status = 'ready'
 
 ## Run / 配额 / Job / 审计约定（A6 起）
 
-| 表 | 关键不变量 |
-|---|---|
-| `runs` | `UNIQUE(user_id, idempotency_key)`；**同 conversation 只有一个非终态 run** |
-| `runs.next_event_seq` | 事件序号的**唯一**分配器，初值 1 → 首次分配得到 1 |
-| `run_events` | `PRIMARY KEY(run_id, seq)`；不接受外部指定 seq |
-| `quota_buckets` | `UNIQUE(user_id, window_start)`；`used>=0`、`reserved>=0`；锁内与当前配置限额比较，不存静态 limit_value |
-| `quota_reservations` | `UNIQUE(run_id)`；`amount = 1`；状态机不倒退 |
-| `jobs` | 幂等键全局唯一；SKIP LOCKED 领取；有效期、running 状态与 token 共同保护 heartbeat/finish |
-| `provider_calls` | `UNIQUE(logical_call_key, attempt_no)`；外部幂等键不随 attempt 改变；unknown 费用未知 |
-| `audit_events` | `before_version`/`after_version` **专指 `resources.version`**，ACL 前后值进 `metadata_json` |
-| `actions` | 不可空 `(actor_id, idempotency_key)` + parameters_hash；保存内容与 ACL 双版本 |
+| 表                    | 关键不变量                                                                                              |
+| --------------------- | ------------------------------------------------------------------------------------------------------- |
+| `runs`                | `UNIQUE(user_id, idempotency_key)`；**同 conversation 只有一个非终态 run**                              |
+| `runs.next_event_seq` | 事件序号的**唯一**分配器，初值 1 → 首次分配得到 1                                                       |
+| `run_events`          | `PRIMARY KEY(run_id, seq)`；不接受外部指定 seq                                                          |
+| `quota_buckets`       | `UNIQUE(user_id, window_start)`；`used>=0`、`reserved>=0`；锁内与当前配置限额比较，不存静态 limit_value |
+| `quota_reservations`  | `UNIQUE(run_id)`；`amount = 1`；状态机不倒退                                                            |
+| `jobs`                | 幂等键全局唯一；SKIP LOCKED 领取；有效期、running 状态与 token 共同保护 heartbeat/finish                |
+| `provider_calls`      | `UNIQUE(logical_call_key, attempt_no)`；外部幂等键不随 attempt 改变；unknown 费用未知                   |
+| `audit_events`        | `before_version`/`after_version` **专指 `resources.version`**，ACL 前后值进 `metadata_json`             |
+| `actions`             | 不可空 `(actor_id, idempotency_key)` + parameters_hash；保存内容与 ACL 双版本                           |
 
 **非终态谓词由枚举派生**，不手写字符串：
 

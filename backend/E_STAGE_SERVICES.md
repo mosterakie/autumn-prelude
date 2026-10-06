@@ -110,7 +110,7 @@ waiting_input。answer 锁当前账号/会话/Run，重新鉴权及验证完整�
 UnitOfWork 在进入/退出时维护任务局部 active_uows。LocalObjectStore 和网页读取器
 在 I/O 入口检查；KnowledgeService 的提取/嵌入/rerank、ExecutionService 的模型端口
 在调用前检查。子任务继承事务标记，也不能借新 Task 绕过边界。E1/E2/E3/E4/E7
-只有数据库操作；邮件发送尚未实现，F/I 接入邮件端口时必须使用相同边界约束。
+只有数据库操作；后续 SMTP 服务也使用相同边界约束，发送在 UoW 外完成。
 
 新增持久 runs.execution_generation、run_sources.context_generation（默认 1，均 >=1）。
 派发/恢复 Job 载荷绑定运行代际，manifest 绑定当前代际。等待/恢复在 Run 锁内推进代际
@@ -150,6 +150,6 @@ Ruff、格式、78 文件 mypy strict、git diff --check、增量迁移回退/�
 测试库独立使用 5442；业务库未修改。各节点本地提交，没有推送或部署。
 
 F 已接入邮箱/密码认证、站长升级验证、资源/动作/Run API 与 SSE；G 已接入
-最小 LangGraph 与业务运行链路，见 [G_STAGE_AGENT.md](G_STAGE_AGENT.md)。H/I 继续
-接入 Worker 调度/heartbeat/业务 handler 和 DeepSeek/Tavily/百炼/邮件。
-E 的完成范围是应用服务和事务边界，当前网站尚未完成真实模型端到端联通。
+最小 LangGraph 与业务运行链路，见 [G_STAGE_AGENT.md](G_STAGE_AGENT.md)。H 及后续节点已
+接入 Worker、业务 handler、真实 AI 和 SMTP。E 的验收范围仍是应用服务和事务边界；
+有限真实 AI 后端链路通过不代表全站联调完成，当前缺口见 [项目归档](../docs/archive/README.md)。

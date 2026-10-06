@@ -1,8 +1,8 @@
 # 秋序技术设计基线
 
 版本：v1.0<br>
-日期：2026 年 10 月 5 日<br>
-范围：前端、统一业务后端与 Agent、接口契约、数据库设计。本文给出工程设计基线；当前已实现第一版独立前端和明确标注的交互演示，后端业务与数据库迁移尚未实现。
+更新日期：2026 年 10 月 6 日<br>
+范围：前端、统一业务后端与 Agent、接口契约、数据库设计。本文保留工程设计基线；后端 A–H、真实 AI 和 SMTP 适配已实现，当前能力与验收缺口见 [项目研究归档](../archive/README.md)。设计中的完整工具、管理 HTTP、自动摘要与保留策略不等于已交付。
 
 ## 阅读顺序
 
@@ -12,7 +12,7 @@
 4. [数据库设计](database.md)：实体、字段、约束、索引与数据生命周期。
 5. [产品方案](../product-plan.md)：产品范围和已确认要求。
 
-接口的名字和事件以接口契约为准，字段存储和约束以数据库设计为准。代码实现后从 FastAPI 模型导出 OpenAPI，前端据此生成类型，避免手写三套定义。
+接口与存储的设计见对应契约；当前已交付路径及有意偏离以 [路由快照](../archive/08-api-snapshot.md)、[数据契约](../../backend/DATA_CONTRACT.md) 和源码交叉核对。前端 DTO 目前仍手写维护，OpenAPI 生成/持续校验属于后续工作。
 
 ## 已确定的产品约束
 
@@ -22,19 +22,19 @@
 
 ## 本轮采用的工程选择
 
-| 项目 | 设计基线 |
-| --- | --- |
-| 前端 | Next.js App Router、TypeScript、Tailwind CSS；业务完全由 FastAPI 处理 |
-| 后端 | FastAPI、Pydantic、SQLAlchemy 2、Alembic |
-| 数据 | PostgreSQL 加 pgvector；外部文件保存到独立存储目录 |
-| Agent | LangGraph，LangChain 仅按模型或工具适配需要引入 |
-| 服务 | DeepSeek 对话与工具调用；Tavily 搜索及提取；百炼向量化，可选重排序 |
-| 登录会话 | 服务端会话加 HttpOnly Cookie；不把登录令牌放 localStorage |
-| 站长额外验证 | 首版采用 TOTP，15 分钟有效，可配置；Passkey 后续可加 |
-| 异步执行 | 同一后端项目中的 PostgreSQL 作业队列与 worker；首版不强制 Redis |
-| 回复传输 | 提交请求取得 run_id，再用可重连的 SSE 获取事件 |
-| 发布 | 私密原稿与显式选择的公开版本分开 |
-| 额度窗口 | Asia/Shanghai 自然日，每日 00:00 重置 |
+| 项目         | 设计基线                                                              |
+| ------------ | --------------------------------------------------------------------- |
+| 前端         | Next.js App Router、TypeScript、Tailwind CSS；业务完全由 FastAPI 处理 |
+| 后端         | FastAPI、Pydantic、SQLAlchemy 2、Alembic                              |
+| 数据         | PostgreSQL 加 pgvector；外部文件保存到独立存储目录                    |
+| Agent        | LangGraph，LangChain 仅按模型或工具适配需要引入                       |
+| 服务         | DeepSeek 对话与工具调用；Tavily 搜索及提取；百炼向量化，可选重排序    |
+| 登录会话     | 服务端会话加 HttpOnly Cookie；不把登录令牌放 localStorage             |
+| 站长额外验证 | 首版采用 TOTP，15 分钟有效，可配置；Passkey 后续可加                  |
+| 异步执行     | 同一后端项目中的 PostgreSQL 作业队列与 worker；首版不强制 Redis       |
+| 回复传输     | 提交请求取得 run_id，再用可重连的 SSE 获取事件                        |
+| 发布         | 私密原稿与显式选择的公开版本分开                                      |
+| 额度窗口     | Asia/Shanghai 自然日，每日 00:00 重置                                 |
 
 框架与库的精确版本在初始化依赖时锁定。DeepSeek 模型 ID、百炼接入地域和嵌入模型由配置确定；向量模型暂以固定 1024 维作为数据库设计基线。角色和色板通过前端主题配置切换，数据库不绑定阮梅或停云。
 
@@ -44,7 +44,7 @@
 flowchart LR
   UI["Next.js 页面与像素角色"] --> API["FastAPI 接口与鉴权"]
   API --> SVC["业务服务"]
-  API --> AGENT["Agent 工作流"]
+  WORKER --> AGENT["Agent 工作流"]
   AGENT --> TOOLS["受限工具"]
   TOOLS --> SVC
   SVC --> PG["PostgreSQL 与 pgvector"]
@@ -74,4 +74,4 @@ flowchart LR
 
 先完成账号与会话、资源与公开版本、问答任务与额度，再接入文档网页入库及模型；最后补全页面、角色状态和管理体验。每一步包含跨账号访问、重试幂等、权限撤回和失败恢复的验证。
 
-当前前端实现、验证与后续对接见 [前端实现记录](frontend-implementation.md)。设计中的后端权限、事务、数据库、模型与邮件仍需实现及联合验收；前端演示不能替代这些能力。
+当前前端实现、验证与后续对接见 [前端实现记录](frontend-implementation.md) 和 [前端运行说明](../../frontend/README.md)。后端已交付模块见 [实施记录](../../backend/DEVELOPMENT.md)，完整状态见 [归档总览](../archive/01-project-snapshot.md)。历史设计、静态检查、基础测试和前端演示都不能替代完整联合验收。

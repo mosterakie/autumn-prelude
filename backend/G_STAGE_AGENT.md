@@ -43,14 +43,14 @@ PostgreSQL；框架 checkpoint 只保存调度元数据。运行入口为
 
 首次运行冻结 `Settings.agent_limits`，Run.config_snapshot.agent_runtime 持久累计：
 
-| 项目 | 默认上限 |
-| --- | ---: |
-| 模型调用 | 4 次 |
-| 工具调用 | 4 次 |
+| 项目         |          默认上限 |
+| ------------ | ----------------: |
+| 模型调用     |              4 次 |
+| 工具调用     |              4 次 |
 | 输入保守单位 | 120000 UTF-8 字节 |
-| 总输出预占 | 16384 tokens |
-| 每次模型输出 | 4096 tokens |
-| 活跃运行耗时 | 120000 毫秒 |
+| 总输出预占   |      16384 tokens |
+| 每次模型输出 |       4096 tokens |
+| 活跃运行耗时 |       120000 毫秒 |
 
 等待时间不计入活跃耗时；恢复继承原 Run 的预算和额度桶。每次输出按最大值预占，
 供应商未返回 usage 不按零处理；输入字节是保守预算单位，不声称等于供应商 token。
@@ -89,5 +89,4 @@ checkpoint 只包含 Run ID、代际、步数和路由。节点异常转换为�
 
 H 已接入 Worker 主循环、registry、heartbeat、回收、业务 handlers、受控对账与
 官方 Postgres checkpoint saver，入口及初始化边界见 [H_STAGE_WORKERS.md](H_STAGE_WORKERS.md)。
-真实供应商与邮件端口继续后续接入。联网搜索尚未注册为工具，不伪称已联网。完整工具清单、
-自动摘要/记忆选择及保留策略管理继续按后续功能扩展。网站真实模型端到端运行仍需供应商适配器。
+G 阶段之后已接入真实模型、嵌入、站长 search_web 与 SMTP，详见 [供应商验收](PROVIDERS_ACCEPTANCE.md) 和 [邮箱配置](EMAIL_CONFIGURATION.md)。当前工具还包含 propose_bookmark/propose_note，写入先人工确认。完整目标工具、自动摘要/记忆选择及保留策略管理仍待扩展；有限真实后端链路通过不等于全站浏览器验收。统一状态见 [项目归档](../docs/archive/README.md)。

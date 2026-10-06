@@ -4,11 +4,11 @@
 
 ## 当前配置
 
-| 能力 | 供应商与模型 | 实际结果 |
-| --- | --- | --- |
-| 对话与 JSON 计划 | DeepSeek / deepseek-flash | 模型列表校验与真实规划、回复成功 |
-| 知识库向量化 | 百炼 / text-embedding-v4 | 工作空间兼容地址实际返回 1024 维向量 |
-| 站长联网搜索 | Tavily / basic | 搜索、引用登记和模型回答成功 |
+| 能力             | 供应商与模型              | 实际结果                             |
+| ---------------- | ------------------------- | ------------------------------------ |
+| 对话与 JSON 计划 | DeepSeek / deepseek-flash | 模型列表校验与真实规划、回复成功     |
+| 知识库向量化     | 百炼 / text-embedding-v4  | 工作空间兼容地址实际返回 1024 维向量 |
+| 站长联网搜索     | Tavily / basic            | 搜索、引用登记和模型回答成功         |
 
 实际账号的模型列表包含 deepseek-flash 与 deepseek-v4-pro；本轮使用 Flash。模型名可以通过 `AUTUMN_LLM_MODEL` 调整。百炼地址由账号工作空间配置，不能用未经验证的公共地址替换。
 
@@ -47,9 +47,9 @@
 
 ## 完整 v1 仍待完成
 
-- 真实邮箱发送与注册验证/找回链路；当前没有邮件供应商配置。
+- 真实邮箱发送与注册验证/找回链路；后续已接入 163 SMTP 和基础检查，授权码填写后的真实登录/收件尚待验证，见 [邮箱配置](EMAIL_CONFIGURATION.md)。
 - 浏览器到 API/Worker 的完整联调，包括知识库文件/网址 HTTP 入口与前端交互覆盖；本轮通过服务与图运行器验证，没有宣称浏览器已验收。
-- 原实施顺序 I1–I3 的依赖检查、可观测性与横切验收，随后再冻结 v1。接入真实供应商不等于 I 阶段已完成。
+- 原实施顺序及修订建议 I 阶段的依赖检查、可观测性、横切验收、评审闸门和冻结复核。接入真实供应商不等于 I 阶段已完成；统一状态见 [项目归档](../docs/archive/README.md)。
 - 部署继续暂缓。
 
 协议核对依据：[DeepSeek Chat API](https://api-docs.deepseek.com/api/create-chat-completion/)、[百炼兼容嵌入接口](https://help.aliyun.com/zh/model-studio/embedding-interfaces-compatible-with-openai/)、[Tavily Search API](https://docs.tavily.com/documentation/api-reference/endpoint/search)。
