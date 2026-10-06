@@ -186,3 +186,10 @@ E8 已提供正式结果与 lease/代际/权限同事务的提交闸门；H 仍�
 - 启用 agent extra：LangGraph 1.2 系列，本地使用内置 runtime 的 1.2.12 与依赖验证，未联网安装。CI 安装 dev,agent；Postgres saver 初始化留在 H，不伪称已经建立框架持久表。
 - 1 项真实图运行基础用例通过，验证工具后重新鉴权和等待分支退出；Ruff、100 文件 mypy strict 与 diff 检查通过。业务服务节点、预算与身份装配随 G2–G7 接入。
 - 图 API 与可选 checkpoint 接口按 [LangGraph Graph API](https://docs.langchain.com/oss/python/langgraph/graph-api) 和 [持久化说明](https://docs.langchain.com/oss/python/langgraph/persistence) 校对。节点本地提交，未推送。
+
+## G2 数据库身份、上下文入口与累计预算（2026-10-06）
+
+- RuntimeService 只接服务端 job_id/lease_token；锁内从 User/Session 重建 ActorContext，复核本人 Run、固定模式、任务绑定与当前代际。thread_id 规范为 conversation + mode，真实输入与补充答案从本 Run 用户消息读取。
+- 选取最多 12 条同会话完整历史消息 ID，正文只可经 E6 capture_dependencies 返回后进入模型。图/checkpoint 不能指定账号、权限、会话或直接提供正文。
+- Run.config_snapshot.agent_runtime 持久记录受控数字预算、累计模型/工具数、输入保守单位、最大输出预占、运行耗时及节点提示。首次执行固定预算，重入/等待恢复不重置；预算不足不派发额外调用。没有重占问答次数。
+- 2 项真实 PostgreSQL 基础用例通过，验证数据库身份/代际、元数据检查点及重入预算；Ruff、101 文件 mypy strict 与 diff 检查通过。无新迁移或业务库写入；本地提交，未推送。

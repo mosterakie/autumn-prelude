@@ -88,6 +88,38 @@ class Settings(BaseSettings):
     metrics_enabled: bool = False
     tracing_enabled: bool = False
 
+    # Agent 预算只含数字；每个 Run 固定快照，等待恢复继续累计。
+    agent_limits: dict[str, int] = Field(
+        default_factory=lambda: {
+            "model_calls": 4,
+            "tool_calls": 4,
+            "input_units": 120000,
+            "output_tokens": 16384,
+            "output_per_call": 4096,
+            "elapsed_ms": 120000,
+        }
+    )
+
+    @field_validator("agent_limits")
+    @classmethod
+    def valid_agent_limits(cls, value: dict[str, int]) -> dict[str, int]:
+        ranges = {
+            "model_calls": (1, 20),
+            "tool_calls": (0, 20),
+            "input_units": (1000, 1000000),
+            "output_tokens": (256, 65536),
+            "output_per_call": (128, 16384),
+            "elapsed_ms": (1000, 600000),
+        }
+        if set(value) != set(ranges) or any(
+            type(value[name]) is not int or not lower <= value[name] <= upper
+            for name, (lower, upper) in ranges.items()
+        ):
+            raise ValueError("Agent 预算必须包含全部受控数字字段")
+        if value["output_per_call"] > value["output_tokens"]:
+            raise ValueError("每轮输出不得超过总输出预算")
+        return value
+
     # ------------------------------------------------------------- 外部依赖 --
     # A1 只登记配置，适配器实现留给 providers / storage 阶段。
     llm_base_url: str | None = None
