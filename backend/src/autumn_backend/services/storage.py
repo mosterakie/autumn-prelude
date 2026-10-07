@@ -101,6 +101,7 @@ class StorageService:
         filename: str,
         data: bytes,
         media_type: str,
+        queue_finalize: bool = True,
     ) -> FileDTO:
         if not idempotency_key.strip() or len(idempotency_key) > 128:
             raise InvalidInputError("上传幂等标识无效")
@@ -138,7 +139,7 @@ class StorageService:
                 media_type=actual_type,
                 size=len(data),
             )
-            if creation.record.status is FileObjectStatus.STAGED:
+            if queue_finalize and creation.record.status is FileObjectStatus.STAGED:
                 await enqueue(
                     uow,
                     JobSpec(

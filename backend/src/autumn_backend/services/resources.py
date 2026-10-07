@@ -29,6 +29,7 @@ from autumn_backend.repositories.resources import RevisionDraft
 from autumn_backend.services.access import lock_authentication, publication_facts, require_allowed
 from autumn_backend.services.public import public_dto
 from autumn_backend.services.storage import StorageService
+from autumn_backend.services.tasks import job_dto
 
 
 class ResourceInput(BaseModel):
@@ -220,18 +221,7 @@ class ResourceService:
             "archived_at": resource.archived_at,
             "current_revision": revision_dto(current) if current else None,
             "publication": public_dto(resource, publication) if publication else None,
-            "processing_jobs": [
-                {
-                    "id": job.id,
-                    "kind": job.kind,
-                    "status": job.status.value,
-                    "phase": job.phase.value if job.phase else None,
-                    "progress": job.progress,
-                    "resource_id": resource.id,
-                    "error": {"code": job.error_code} if job.error_code else None,
-                }
-                for job in jobs
-            ],
+            "processing_jobs": [job_dto(job) for job in jobs],
         }
 
     async def list(

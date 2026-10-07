@@ -57,6 +57,7 @@ class MaintenanceService:
             "storage.finalize",
             "storage.delete",
             "knowledge.ingest",
+            "knowledge.bookmark",
             "knowledge.publication_sync",
             "knowledge.cleanup",
             "conversation.cleanup",

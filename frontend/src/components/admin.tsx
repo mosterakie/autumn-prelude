@@ -1,6 +1,6 @@
 "use client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   BookOpen,
   FileText,
@@ -37,7 +37,12 @@ import {
   PageHeading,
   Spinner,
 } from "./ui";
-const kindLabel = { article: "手记", bookmark: "收藏", document: "文档" };
+const kindLabel = {
+  article: "手记",
+  bookmark: "收藏",
+  document: "文档",
+  webpage: "网页资料",
+};
 export function ContentAdmin({
   initialKind,
 }: {
@@ -531,8 +536,13 @@ export function KnowledgeAdmin() {
     new Map(
       [
         ...jobs,
-        ...(resources.data?.items.flatMap((r) => r.processing_jobs || []) ||
-          []),
+        ...(resources.data?.items
+          .flatMap((r) => r.processing_jobs || [])
+          .filter(
+            (job) =>
+              !job.kind ||
+              ["knowledge.ingest", "knowledge.bookmark"].includes(job.kind),
+          ) || []),
       ].map((j) => [j.id, j]),
     ).values(),
   );
@@ -707,7 +717,7 @@ export function KnowledgeAdmin() {
               </div>
             </div>
             <Button
-              disabled={!r.current_revision.url}
+              disabled={r.kind !== "webpage" || !r.current_revision.url}
               className="compact"
               onClick={async () => {
                 try {
@@ -736,6 +746,7 @@ function ArrowIcon() {
   return <ExternalLink size={15} />;
 }
 function JobCard({ initial }: { initial: Job }) {
+  const queryClient = useQueryClient();
   const [error, setError] = useState("");
   const query = useQuery({
     queryKey: ["job", initial.id],
@@ -760,7 +771,14 @@ function JobCard({ initial }: { initial: Job }) {
       fetching: "抓取网页",
       parsing: "解析文字",
       embedding: "建立检索索引",
+      indexing: "建立检索索引",
+      finalizing: "保存文件",
+      deleting: "清理文件",
     };
+  useEffect(() => {
+    if (job.status === "succeeded")
+      void queryClient.invalidateQueries({ queryKey: ["resources"] });
+  }, [job.status, queryClient]);
   return (
     <div className="job-card inset">
       <div className="row between">
@@ -785,7 +803,8 @@ function JobCard({ initial }: { initial: Job }) {
       {job.error && <Notice error>{job.error.message}</Notice>}
       {error && <Notice error>{error}</Notice>}
       <div className="row">
-        {["queued", "running"].includes(job.status) && (
+        {(job.can_cancel ??
+          (isDemo && ["queued", "running"].includes(job.status))) && (
           <button
             className="text-button small"
             onClick={async () => {
@@ -805,14 +824,19 @@ function JobCard({ initial }: { initial: Job }) {
             className="text-button small"
             onClick={async () => {
               try {
-                await mutate(`/jobs/${job.id}/retry`, {}, "POST", newKey());
+                await mutate(
+                  `/jobs/${job.id}/retry`,
+                  { expected_version: job.version },
+                  "POST",
+                  newKey(),
+                );
                 query.refetch();
               } catch (e) {
                 setError((e as Error).message);
               }
             }}
           >
-            重新尝试
+            {job.status === "waiting_auth" ? "验证后恢复" : "重新尝试"}
           </button>
         )}
       </div>

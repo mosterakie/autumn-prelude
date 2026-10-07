@@ -16,6 +16,7 @@ from autumn_backend.services.action_execution import ActionExecutionService
 from autumn_backend.services.auth_email import AuthEmailService
 from autumn_backend.services.conversation_cleanup import ConversationCleanupService
 from autumn_backend.services.knowledge import KnowledgeService
+from autumn_backend.services.knowledge_imports import KnowledgeImportService
 from autumn_backend.services.maintenance import MaintenanceService
 from autumn_backend.services.run_cancellation import RunCancellationService
 from autumn_backend.services.storage import StorageService
@@ -45,6 +46,12 @@ def configured_worker(
 ) -> Worker:
     tasks = TaskService(uows)
     handlers = {**storage_handlers(storage, tasks), **cleanup_handlers(uows)}
+    imports = KnowledgeImportService(uows, storage, knowledge)
+
+    async def bookmark(job: LeasedJob) -> None:
+        await imports.execute(await tasks.actor(job), job.id, job.token)
+
+    handlers["knowledge.bookmark"] = bookmark
     handlers["action.execute"] = ActionExecutionService(uows).execute
     handlers["conversation.cleanup"] = ConversationCleanupService(uows).execute
     if email is not None:

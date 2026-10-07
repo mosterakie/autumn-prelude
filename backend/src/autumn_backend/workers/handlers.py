@@ -15,6 +15,7 @@ from autumn_backend.services.execution import ExecutionService
 from autumn_backend.services.index_cleanup import IndexCleanupService
 from autumn_backend.services.input_waits import InputWaitService
 from autumn_backend.services.knowledge import KnowledgeService
+from autumn_backend.services.knowledge_imports import KnowledgeImportService
 from autumn_backend.services.runtime import RuntimeService
 from autumn_backend.services.storage import StorageService
 from autumn_backend.services.tasks import TaskService
@@ -40,8 +41,10 @@ def storage_handlers(storage: StorageService, tasks: TaskService) -> dict[str, H
 
 
 def knowledge_handlers(knowledge: KnowledgeService, tasks: TaskService) -> dict[str, Handler]:
+    imports = KnowledgeImportService(knowledge._uows, knowledge.storage, knowledge)
+
     async def index(job: LeasedJob) -> None:
-        await knowledge.build_index(await tasks.actor(job), job.id, job.token)
+        await imports.execute(await tasks.actor(job), job.id, job.token)
 
     async def publication(job: LeasedJob) -> None:
         await knowledge.sync_publication(await tasks.actor(job), job.id, job.token)

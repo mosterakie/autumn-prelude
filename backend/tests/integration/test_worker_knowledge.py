@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from autumn_backend.db.models import KnowledgeChunk, KnowledgeIndex
 from autumn_backend.repositories.jobs import JobSpec
+from autumn_backend.repositories.resources import RevisionDraft
 from autumn_backend.workers.bootstrap import configured_worker
 from tests.integration.service_cases import ServiceCase
 from tests.integration.test_knowledge_service import service_for
@@ -17,6 +18,14 @@ async def test_index_worker_public_projection_and_invalid_index_cleanup(
 ) -> None:
     service = service_for(e_case)
     worker = configured_worker(e_case.uows, service.storage, knowledge=service)
+    async with e_case.uows() as uow:
+        resource = await uow.repositories.resources.get_for_update_or_raise(e_case.resource_id)
+        await uow.repositories.resources.revise(
+            resource.id,
+            expected_version=resource.version,
+            created_by=e_case.owner.user_id,
+            draft=RevisionDraft(title="新的私人原稿", body_text="不得进入旧公开索引"),
+        )
     await service.request_index(
         e_case.owner, e_case.resource_id, publication_id=e_case.publication_id
     )
@@ -42,6 +51,9 @@ async def test_index_worker_public_projection_and_invalid_index_cleanup(
     async with e_case.uows() as uow:
         assert not list(
             await uow.session.scalars(
-                select(KnowledgeIndex.id).where(KnowledgeIndex.is_active.is_(True))
+                select(KnowledgeIndex.id).where(
+                    KnowledgeIndex.resource_id == e_case.resource_id,
+                    KnowledgeIndex.is_active.is_(True),
+                )
             )
         )

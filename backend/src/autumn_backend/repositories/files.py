@@ -81,11 +81,14 @@ class FileRepository(ControlledMutableRepository[FileObject]):
             {"deleted_at": func.clock_timestamp()},
         )
 
-    async def attach(self, object_id: UUID, resource_id: UUID) -> None:
+    async def attach(
+        self, object_id: UUID, resource_id: UUID, *, allow_staged: bool = False
+    ) -> None:
         record = await self.get_for_update_or_raise(object_id)
         if (
             record.resource_id not in (None, resource_id)
-            or record.status is not Status.READY
+            or record.status
+            not in ((Status.READY, Status.STAGED) if allow_staged else (Status.READY,))
             or record.deleted_at is not None
         ):
             raise ConflictError("文件不可绑定此资源")

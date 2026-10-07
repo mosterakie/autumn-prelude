@@ -191,10 +191,12 @@ data: {"message_id":"33333333-3333-4333-8333-333333333333","body":"找到了两�
 | POST /api/knowledge/urls                            | url、mode、title 可空、tags；收藏或抓取入库，202                                                     |
 | POST /api/resources/{id}/refresh                    | expected_version；仅网页资料手动抓取新版本，202                                                      |
 | GET /api/jobs/{id}                                  | 状态、阶段、进度和错误                                                                               |
-| POST /api/jobs/{id}/cancel                          | 请求取消                                                                                             |
-| POST /api/jobs/{id}/retry                           | failed 或 waiting_auth 时重试或恢复；重用资源，避免重复入库                                          |
+| POST /api/jobs/{id}/cancel                          | 当前实现仅取消本人 queued 知识任务；开始处理后返回 409                                              |
+| POST /api/jobs/{id}/retry                           | expected_version；当前实现仅恢复 waiting_auth，需先重新验证；未知供应商结果必须先对账                 |
 
-knowledge/urls.mode 为 bookmark_only、knowledge_only 或 bookmark_and_knowledge。收藏与网页资料分别是资源，关联但不继承权限。仅收藏时也会校验 URL；获取标题失败可由站长手填，不宣称正文已入库。
+knowledge/urls.mode 为 bookmark_only、knowledge_only 或 bookmark_and_knowledge。收藏与网页资料分别是资源，关联但不继承权限。仅收藏时校验 URL、使用自定义标题或网址作为标题，不抓取网页或调用嵌入服务。
+
+上述知识导入、网页刷新和本人知识任务 HTTP 已于 2026-10-07 注册，详见 [本地调试说明](../../backend/KNOWLEDGE_IMPORT_API.md)。文件标题可省略；导入统一返回 resource、job、bookmark 可空，202 表示持久受理，不表示索引完成。默认私人，不自动公开。
 
 ResourceDTO 包括 id、kind、slug、version、acl_version、current_revision、publication、processing_jobs。RevisionDTO 包括 id、revision_no、title、body_text、url、private_note、tags 和受控文件元数据，只有站长可读取。
 

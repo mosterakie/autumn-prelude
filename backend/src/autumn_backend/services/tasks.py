@@ -5,9 +5,9 @@ from uuid import UUID
 from sqlalchemy import select
 
 from autumn_backend.db.enums import ActionStatus, JobStatus, ProviderCallStatus, RunStatus
-from autumn_backend.db.models import ProviderCall
-from autumn_backend.db.session import UnitOfWorkFactory
-from autumn_backend.errors import NotFoundError, OptimisticLockError
+from autumn_backend.db.models import Job, ProviderCall
+from autumn_backend.db.session import UnitOfWork, UnitOfWorkFactory
+from autumn_backend.errors import ConflictError, NotFoundError, OptimisticLockError
 from autumn_backend.jobs.queue import LeasedJob
 from autumn_backend.policies import ActorContext, ActorRole, DenialCode
 from autumn_backend.policies.facts import Operation, PolicyFacts
@@ -15,10 +15,93 @@ from autumn_backend.services.access import AuthorizationError, lock_authenticati
 from autumn_backend.services.maintenance import fail_run_in_uow
 from autumn_backend.services.runtime import RuntimeService, StopCode
 
+KNOWLEDGE_TASK_KINDS = ("knowledge.ingest", "knowledge.bookmark")
+
+
+def job_dto(job: Job) -> dict[str, object]:
+    """只暴露状态和受控结果，不返回任务载荷、存储路径或租约令牌。"""
+    messages = {
+        "STEP_UP_REQUIRED": "站长验证已过期，请重新验证后恢复任务。",
+        "SESSION_EXPIRED": "登录会话已过期，请重新登录并验证站长身份。",
+        "IMPORT_INVALID_INPUT": "文件无法提取文字或网页内容无效；请检查文件类型、扫描件和页面访问限制。",
+        "IMPORT_FETCH_FAILED": "网页抓取失败，请检查网址是否可公开访问。",
+        "IMPORT_STALE": "资源内容或权限已变化，本次处理已停止。",
+        "HANDLER_FAILED": "处理失败；请查看 Worker 日志，确认文件、网页与嵌入服务配置。",
+        "provider_outcome_unknown": "供应商结果未确定，请先核对调用记录。",
+    }
+    return {
+        "id": job.id,
+        "kind": job.kind,
+        "version": job.version,
+        "resource_id": job.resource_id,
+        "status": job.status.value,
+        "phase": job.phase.value if job.phase else None,
+        "progress": job.progress,
+        "can_cancel": job.kind in KNOWLEDGE_TASK_KINDS and job.status is JobStatus.QUEUED,
+        "can_retry": job.kind in KNOWLEDGE_TASK_KINDS
+        and job.status is JobStatus.WAITING_AUTH
+        and job.attempts < job.max_attempts,
+        "result": {k: v for k, v in (job.result or {}).items() if k in ("resource_id", "index_id")},
+        "error": {
+            "code": job.error_code,
+            "message": messages.get(job.error_code, "任务处理失败，请查看 Worker 日志。"),
+        }
+        if job.error_code
+        else None,
+    }
+
 
 class TaskService:
     def __init__(self, uows: UnitOfWorkFactory) -> None:
         self.uows = uows
+
+    async def _knowledge_job(self, uow: UnitOfWork, actor: ActorContext, job_id: UUID) -> Job:
+        authentication = await lock_authentication(uow, actor)
+        require_allowed(
+            actor,
+            PolicyFacts(
+                operation=Operation.INGEST_RESOURCE,
+                authentication=authentication,
+                now=await uow.repositories.users.database_time(),
+                current_scope_epoch=await uow.repositories.settings.get_acl_epoch(),
+            ),
+        )
+        job = await uow.repositories.jobs.get_for_update_or_raise(job_id)
+        if job.actor_id != actor.user_id or job.kind not in KNOWLEDGE_TASK_KINDS:
+            raise NotFoundError("任务不存在")
+        return job
+
+    async def read(self, actor: ActorContext, job_id: UUID) -> dict[str, object]:
+        async with self.uows() as uow:
+            job = await self._knowledge_job(uow, actor, job_id)
+            dto = job_dto(job)
+            if dto["can_retry"]:
+                dto["can_retry"] = (
+                    await uow.session.scalar(
+                        select(ProviderCall.id)
+                        .where(
+                            ProviderCall.job_id == job.id,
+                            ProviderCall.status.in_(
+                                (ProviderCallStatus.DISPATCHED, ProviderCallStatus.UNKNOWN)
+                            ),
+                        )
+                        .limit(1)
+                    )
+                    is None
+                )
+            return dto
+
+    async def cancel(self, actor: ActorContext, job_id: UUID) -> dict[str, object]:
+        async with self.uows() as uow:
+            job = await self._knowledge_job(uow, actor, job_id)
+            if job.status is JobStatus.CANCELLED:
+                return job_dto(job)
+            if job.status is not JobStatus.QUEUED:
+                raise ConflictError("仅尚未开始处理的任务可以取消")
+            job.status, job.version = JobStatus.CANCELLED, job.version + 1
+            await uow.session.flush()
+            await self._knowledge_job(uow, actor, job_id)
+            return job_dto(job)
 
     async def actor(self, job: LeasedJob) -> ActorContext:
         async with self.uows() as uow:
@@ -89,13 +172,24 @@ class TaskService:
                     "storage.finalize",
                     "storage.delete",
                     "knowledge.ingest",
+                    "knowledge.bookmark",
                     "knowledge.publication_sync",
                 )
             ):
                 await uow.repositories.jobs.pause_auth(job.id, job.token, error_code=code)
                 return
+            from autumn_backend.errors import InvalidInputError
+
+            error_code = "HANDLER_FAILED"
+            if job.kind in KNOWLEDGE_TASK_KINDS:
+                if isinstance(error, InvalidInputError):
+                    error_code = "IMPORT_INVALID_INPUT"
+                elif isinstance(error, OptimisticLockError):
+                    error_code = "IMPORT_STALE"
+                elif isinstance(error, (OSError, TimeoutError)):
+                    error_code = "IMPORT_FETCH_FAILED"
             await uow.repositories.jobs.finish(
-                job.id, job.token, status=JobStatus.FAILED, error_code="HANDLER_FAILED"
+                job.id, job.token, status=JobStatus.FAILED, error_code=error_code
             )
 
     async def _fail_action(self, leased: LeasedJob) -> None:
@@ -221,6 +315,7 @@ class TaskService:
                 "storage.finalize",
                 "storage.delete",
                 "knowledge.ingest",
+                "knowledge.bookmark",
                 "knowledge.publication_sync",
             ):
                 raise NotFoundError("任务不存在")
@@ -249,4 +344,4 @@ class TaskService:
                 current_scope_epoch=facts.current_scope_epoch,
             )
             require_allowed(actor, facts)
-            return {"id": str(job.id), "status": job.status.value, "version": job.version}
+            return job_dto(job)

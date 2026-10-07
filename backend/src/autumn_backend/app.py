@@ -12,7 +12,7 @@ SSE 与错误映射；不直接访问 ORM，不直接调 provider。
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI
@@ -26,20 +26,25 @@ from autumn_backend.api.chats import router as chat_router
 from autumn_backend.api.comments import router as comment_router
 from autumn_backend.api.errors import install_error_handlers
 from autumn_backend.api.events import router as event_router
+from autumn_backend.api.knowledge import router as knowledge_router
 from autumn_backend.api.middleware import install_request_middleware
 from autumn_backend.api.provider_reconciliation import router as reconciliation_router
 from autumn_backend.api.public import router as public_router
 from autumn_backend.api.quota import router as quota_router
 from autumn_backend.api.resources import router as resource_router
 from autumn_backend.api.tasks import router as task_router
+from autumn_backend.api.upload_limit import UploadBodyLimit
 from autumn_backend.auth.service import AuthService
 from autumn_backend.config import Settings, get_settings
 from autumn_backend.db.session import UnitOfWorkFactory, create_engine, create_session_factory
 from autumn_backend.observability.logging import configure_logging, get_logger
+from autumn_backend.providers.configured import providers
 from autumn_backend.services.actions import ActionService
 from autumn_backend.services.chats import ChatService
 from autumn_backend.services.comments import CommentService
 from autumn_backend.services.events import EventService
+from autumn_backend.services.knowledge import KnowledgeService
+from autumn_backend.services.knowledge_imports import KnowledgeImportService
 from autumn_backend.services.provider_reconciliation import ProviderReconciliationService
 from autumn_backend.services.public import PublicService
 from autumn_backend.services.publication import PublicationService
@@ -59,39 +64,50 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = app.state.settings
     configure_logging(settings)
 
-    engine: AsyncEngine | None = None
-    # Engine 延迟连接；测试通过独立 UoW 注入，永不连接默认业务数据库。
-    if not settings.is_test:
-        engine = create_engine(settings)
-        app.state.engine = engine
-        app.state.session_factory = create_session_factory(engine)
-        app.state.uows = UnitOfWorkFactory(app.state.session_factory)
-        app.state.auth = AuthService(app.state.uows, settings)
-        app.state.storage = StorageService(app.state.uows, LocalObjectStore(settings.storage_root))
-        app.state.resources = ResourceService(app.state.uows, app.state.storage)
-        app.state.public = PublicService(app.state.uows, app.state.storage.store)
-        app.state.actions = ActionService(app.state.uows)
-        app.state.tasks = TaskService(app.state.uows)
-        app.state.provider_reconciliation = ProviderReconciliationService(app.state.uows)
-        app.state.publications = PublicationService(app.state.uows)
-        app.state.chats = ChatService(app.state.uows)
-        app.state.runs = RunService(app.state.uows, settings=settings)
-        app.state.events = EventService(app.state.uows)
-        app.state.comments = CommentService(app.state.uows)
-        app.state.quota = QuotaService(app.state.uows, settings=settings)
+    async with AsyncExitStack() as stack:
+        engine: AsyncEngine | None = None
+        # Engine 延迟连接；测试通过独立 UoW 注入，永不连接默认业务数据库。
+        if not settings.is_test:
+            engine = create_engine(settings)
+            stack.push_async_callback(engine.dispose)
+            app.state.engine = engine
+            app.state.session_factory = create_session_factory(engine)
+            app.state.uows = UnitOfWorkFactory(app.state.session_factory)
+            app.state.auth = AuthService(app.state.uows, settings)
+            app.state.storage = StorageService(
+                app.state.uows, LocalObjectStore(settings.storage_root)
+            )
+            configured = await stack.enter_async_context(providers(settings))
+            knowledge = (
+                KnowledgeService(app.state.uows, app.state.storage, configured.embedder)
+                if configured.embedder
+                else None
+            )
+            app.state.knowledge_imports = KnowledgeImportService(
+                app.state.uows, app.state.storage, knowledge
+            )
+            app.state.resources = ResourceService(app.state.uows, app.state.storage)
+            app.state.public = PublicService(app.state.uows, app.state.storage.store)
+            app.state.actions = ActionService(app.state.uows)
+            app.state.tasks = TaskService(app.state.uows)
+            app.state.provider_reconciliation = ProviderReconciliationService(app.state.uows)
+            app.state.publications = PublicationService(app.state.uows)
+            app.state.chats = ChatService(app.state.uows)
+            app.state.runs = RunService(app.state.uows, settings=settings)
+            app.state.events = EventService(app.state.uows)
+            app.state.comments = CommentService(app.state.uows)
+            app.state.quota = QuotaService(app.state.uows, settings=settings)
 
-    logger.info(
-        "app.startup",
-        version=__version__,
-        environment=settings.environment.value,
-        database_engine=engine is not None,
-    )
-    try:
-        yield
-    finally:
-        if engine is not None:
-            await engine.dispose()
-        logger.info("app.shutdown", version=__version__)
+        logger.info(
+            "app.startup",
+            version=__version__,
+            environment=settings.environment.value,
+            database_engine=engine is not None,
+        )
+        try:
+            yield
+        finally:
+            logger.info("app.shutdown", version=__version__)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -116,11 +132,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         expose_headers=["X-Request-ID", "Retry-After"],
     )
     install_error_handlers(app)
+    app.add_middleware(UploadBodyLimit)
     install_request_middleware(app)
     app.include_router(auth_router)
     app.include_router(chat_router)
     app.include_router(event_router)
     app.include_router(resource_router)
+    app.include_router(knowledge_router)
     app.include_router(task_router)
     app.include_router(reconciliation_router)
     app.include_router(public_router)

@@ -28,7 +28,7 @@ export interface Quota {
 }
 export interface PublicResource {
   id: string;
-  kind: "article" | "bookmark" | "document";
+  kind: "article" | "bookmark" | "document" | "webpage";
   slug: string;
   publication_id: string;
   publication_no: number;
@@ -136,6 +136,8 @@ export interface Resource {
 }
 export interface Job {
   id: string;
+  kind?: string;
+  version?: number;
   resource_id: string;
   status:
     | "queued"
@@ -145,10 +147,18 @@ export interface Job {
     | "failed"
     | "cancelling"
     | "cancelled";
-  phase?: "fetching" | "parsing" | "embedding";
+  phase?:
+    | "fetching"
+    | "parsing"
+    | "embedding"
+    | "indexing"
+    | "finalizing"
+    | "deleting"
+    | null;
   progress: number | null;
   can_retry: boolean;
-  error?: { code: string; message: string };
+  can_cancel?: boolean;
+  error?: { code: string; message: string } | null;
 }
 export interface Action {
   id: string;
