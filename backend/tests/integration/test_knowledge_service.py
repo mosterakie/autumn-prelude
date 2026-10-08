@@ -188,13 +188,11 @@ async def test_index_permission_change_during_external_io_discards_results(
         assert job is not None and job.lease_token is not None
     original = service.embedder.embed
 
-    async def revoke(texts):
-        vectors = await original(texts)
-        async with e_case.uows() as uow:
-            await uow.repositories.publications.revoke(
-                e_case.resource_id, expected_version=0, expected_acl_version=1
-            )
-        return vectors
+    async def revoke(texts, *, external_idempotency_key=None):
+        vectors = await original(
+        texts,
+        external_idempotency_key=external_idempotency_key,
+       )
 
     monkeypatch.setattr(service.embedder, "embed", revoke)
     with pytest.raises(OptimisticLockError):

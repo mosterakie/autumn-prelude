@@ -48,8 +48,13 @@ async def test_provider_state_cas(session: AsyncSession, terminal: str) -> None:
     assert settled.status == ProviderCallStatus(terminal) and settled.finished_at is not None
     with pytest.raises(ConflictError):
         await repository.settle_unknown(first.record.id)
-    second = await repository.prepare(**arguments, attempt_no=2)
-    assert second.created and second.record.id != first.record.id
+    if terminal == "failed":
+        second = await repository.prepare(**arguments, attempt_no=2)
+        assert second.created
+        assert second.record.attempt_no == 2
+    else:
+        with pytest.raises(ConflictError):
+            await repository.prepare(**arguments, attempt_no=2)
     assert external_idempotency_key(second.record.logical_call_key) == external_idempotency_key(
         first.record.logical_call_key
     )
